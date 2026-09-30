@@ -2,7 +2,7 @@
 // 1. fetch new orders from connected Shopify / WooCommerce shops that came through a Hýsa link or code
 // 2. monthly invoices for the previous month
 // 3. emails from hysa@hysa.fo: new sign-ups (to Hýsa), welcome (to approved partners), sale notifications, PDF invoices
-import { commission, agrLabel, uid, nowISO, saleEmail, invoiceEmail, welcomeEmail, fmtMoney, createInvoice, billable, defaultSettings, SYSTEMS } from "../public/assets/lib.js";
+import { commission, agrLabel, uid, nowISO, normRef, saleEmail, invoiceEmail, welcomeEmail, fmtMoney, createInvoice, billable, defaultSettings, SYSTEMS } from "../public/assets/lib.js";
 
 const BASE = (process.env.WORKER_URL || "").replace(/\/$/, "");
 const KEY = process.env.JOB_KEY;
@@ -14,7 +14,8 @@ if (!res.ok) throw new Error(`Could not load data: ${res.status}`);
 const data = await res.json();
 const st = { ...defaultSettings(), ...data.settings };
 const before = new Map();
-for (const [k, arr] of [["partner", data.partners], ["sale", data.sales], ["invoice", data.invoices]]) for (const d of arr) before.set(`${k}:${d.id}`, JSON.stringify(d));
+data.vouchers = data.vouchers || [];
+for (const [k, arr] of [["partner", data.partners], ["sale", data.sales], ["invoice", data.invoices], ["voucher", data.vouchers]]) for (const d of arr) before.set(`${k}:${d.id}`, JSON.stringify(d));
 const log = [];
 const say = (m) => { console.log(m); log.push(`${nowISO().slice(0, 16).replace("T", " ")} ${m}`); };
 const touch = (o) => { o.updatedAt = nowISO(); return o; };
@@ -26,7 +27,7 @@ const clickIn = (s) => (String(s || "").match(/[?&]hysa_click=([A-Za-z0-9]+)/) |
 const viaHysa = (s) => /[?&](ref|utm_source)=hysa\b/i.test(String(s || "")) || !!clickIn(s);
 const codeEq = (a, b) => a && b && a.trim().toLowerCase() === b.trim().toLowerCase();
 
-async function shopify(p) {
+async function shopify(p, refs) {
   const shop = p.integration.shop.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
   let url = `https://${shop}/admin/api/2024-10/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(since(p))}`;
   const out = [];
@@ -39,19 +40,19 @@ async function shopify(p) {
       if (o.cancelled_at || o.test) continue;
       const code = (o.discount_codes || []).find((d) => codeEq(d.code, p.discountCode));
       const link = viaHysa(o.landing_site) || (o.note_attributes || []).some((n) => /hysa/i.test(`${n.name}${n.value}`));
-      if (!code && !link) continue;
+      if (!code && !link && !refs.has(normRef(o.name || o.id))) continue;
       const refunded = (o.refunds || []).reduce((a, rf) => a + (rf.transactions || []).filter((t) => t.kind === "refund").reduce((b, t) => b + (+t.amount || 0), 0), 0);
       const c = o.customer || {};
       out.push({ extId: `shopify:${o.id}`, orderRef: o.name || String(o.id), date: o.created_at, amount: Math.max(0, (+o.current_subtotal_price || +o.subtotal_price || 0) - refunded), currency: o.currency,
         guestName: [c.first_name, c.last_name].filter(Boolean).join(" ") || o.billing_address?.name || "", guestEmail: o.email || c.email || "", guestPhone: o.phone || c.phone || "",
-        clickId: clickIn(o.landing_site), matchedBy: link ? "Hýsa link" : `code ${code.code}` });
+        clickId: clickIn(o.landing_site) || ((o.note_attributes || []).find((n) => n.name === "hysa_click") || {}).value || "", matchedBy: link ? "Hýsa link" : code ? `code ${code.code}` : "Hýsa link (returning guest)" });
     }
     const next = (r.headers.get("link") || "").match(/<([^>]+)>;\s*rel="next"/);
     url = next ? next[1] : null;
   }
   return out;
 }
-async function woo(p) {
+async function woo(p, refs) {
   const base = p.integration.url.replace(/\/+$/, "");
   const auth = "Basic " + Buffer.from(`${p.integration.key}:${p.integration.secret}`).toString("base64");
   const out = [];
@@ -66,11 +67,11 @@ async function woo(p) {
       const m = Object.fromEntries((o.meta_data || []).map((x) => [x.key, String(x.value ?? "")]));
       const entry = m._wc_order_attribution_session_entry || "";
       const link = viaHysa(entry) || /hysa/i.test(m._wc_order_attribution_utm_source || "");
-      if (!code && !link) continue;
+      if (!code && !link && !refs.has(normRef(o.number || o.id))) continue;
       const b = o.billing || {};
       out.push({ extId: `woo:${o.id}`, orderRef: String(o.number || o.id), date: o.date_created_gmt ? o.date_created_gmt + "Z" : o.date_created,
         amount: Math.max(0, (+o.total || 0) - (+o.total_tax || 0) - (+o.shipping_total || 0) - (o.refunds || []).reduce((a, x) => a + Math.abs(+x.total || 0), 0)), currency: o.currency,
-        guestName: [b.first_name, b.last_name].filter(Boolean).join(" "), guestEmail: b.email || "", guestPhone: b.phone || "", clickId: clickIn(entry), matchedBy: link ? "Hýsa link" : `code ${code.code}` });
+        guestName: [b.first_name, b.last_name].filter(Boolean).join(" "), guestEmail: b.email || "", guestPhone: b.phone || "", clickId: clickIn(entry), matchedBy: link ? "Hýsa link" : code ? `code ${code.code}` : "Hýsa link (returning guest)" });
     }
     if (list.length < 100) break;
   }
@@ -84,11 +85,20 @@ for (const p of data.partners) {
   if (t === "shopify" && !(p.integration.shop && p.integration.token)) continue;
   if (t === "woocommerce" && !(p.integration.url && p.integration.key)) continue;
   try {
-    const orders = t === "shopify" ? await shopify(p) : await woo(p);
+    const refs = new Set(data.sales.filter((s) => !s.deleted && s.partnerId === p.id && s.source === "script").map((s) => normRef(s.orderRef)).filter(Boolean));
+    const orders = t === "shopify" ? await shopify(p, refs) : await woo(p, refs);
     let n = 0;
     for (const o of orders) {
       if (known.has(o.extId)) continue;
-      known.add(o.extId); n++;
+      known.add(o.extId);
+      // Already reported by the tracking code on the partner's website? Then use the exact amount from the shop instead of adding it twice.
+      const dup = data.sales.find((s) => !s.deleted && s.partnerId === p.id && s.source === "script" && normRef(s.orderRef) && normRef(s.orderRef) === normRef(o.orderRef));
+      if (dup) {
+        if (dup.status === "open" || !dup.status) Object.assign(dup, { amount: o.amount, commission: commission(p, o.amount, dup.persons || 1), guestName: dup.guestName || o.guestName, guestEmail: dup.guestEmail || o.guestEmail, guestPhone: dup.guestPhone || o.guestPhone });
+        Object.assign(dup, { extId: o.extId, source: t }); touch(dup);
+        continue;
+      }
+      n++;
       const ts = nowISO();
       data.sales.push({ id: uid("s_"), partnerId: p.id, ...o, date: (o.date || ts).slice(0, 10), currency: o.currency || p.currency || "DKK", persons: 1, method: "online", source: t,
         commission: commission(p, o.amount, 1), rateLabel: agrLabel(p), status: "open", review: "approved", notifiedAt: null, createdAt: ts, updatedAt: ts });
@@ -179,6 +189,18 @@ if (process.env.SMTP_HOST) {
       catch (e) { say(`Welcome email to ${p.name} failed: ${e.message}`); }
     }
   }
+  for (const v of data.vouchers) {
+    if (v.emailedAt || v.deleted || !v.guestEmail || (v.expiresAt || "") < nowISO()) continue;
+    const p = data.partners.find((x) => x.id === v.partnerId);
+    try {
+      await send({ to: v.guestEmail, subject: `Your Hýsa guest voucher for ${p?.name || "your visit"}: ${v.id}`, text: [
+        `Hi ${v.guestName.split(" ")[0] || "there"},`, "",
+        `Here is your personal Hýsa guest voucher for ${p?.name || ""}.`, "",
+        `Voucher code: ${v.id}`, v.offer ? `Offer: ${v.offer}` : null, `Valid until: ${(v.expiresAt || "").slice(0, 10)}`, p?.address ? `Address: ${p.address}` : null, "",
+        "Show the code to the staff before you pay.", "", "Enjoy your stay,", st.company].filter((l) => l !== null).join("\n") });
+      v.emailedAt = nowISO(); touch(v);
+    } catch (e) { say(`Voucher email failed: ${e.message}`); }
+  }
   for (const s of data.sales) {
     if (s.notifiedAt || !billable(s)) continue;
     const p = data.partners.find((x) => x.id === s.partnerId);
@@ -209,7 +231,7 @@ if (process.env.SMTP_HOST) {
 
 /* ---------- save changes ---------- */
 const docs = [];
-for (const [k, arr] of [["partner", data.partners], ["sale", data.sales], ["invoice", data.invoices]]) for (const d of arr) if (before.get(`${k}:${d.id}`) !== JSON.stringify(d)) docs.push({ kind: k, doc: d });
+for (const [k, arr] of [["partner", data.partners], ["sale", data.sales], ["invoice", data.invoices], ["voucher", data.vouchers]]) for (const d of arr) if (before.get(`${k}:${d.id}`) !== JSON.stringify(d)) docs.push({ kind: k, doc: d });
 const prevLog = data.sync?.log || [];
 docs.push({ kind: "meta", doc: { id: "sync", lastRun: nowISO(), log: [...log.reverse(), ...prevLog].slice(0, 100), updatedAt: nowISO() } });
 for (let i = 0; i < docs.length; i += 200) {

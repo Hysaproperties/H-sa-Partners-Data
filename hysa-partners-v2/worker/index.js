@@ -76,7 +76,33 @@ function trackingScript(origin, days) {
     if(navigator.sendBeacon&&navigator.sendBeacon(API,body))return true;
     try{fetch(API,{method:"POST",body:body,keepalive:true,mode:"no-cors"})}catch(e){}return true};
   var q=window.hysaQueue;if(q&&q.length)for(var i=0;i<q.length;i++)window.hysaConversion(q[i]);
+  var c=get();if(!c)return;
+  /* Shopify: write the Hýsa mark onto the cart so it is saved on the order */
+  if(window.Shopify&&window.fetch){try{if(sessionStorage.getItem("hysa_cart")!==c){fetch("/cart/update.js",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({attributes:{hysa_click:c}})}).then(function(){try{sessionStorage.setItem("hysa_cart",c)}catch(e){}})}}catch(e){}}
+  /* WooCommerce: report the order on the order-received page */
+  var w=location.pathname.match(/order-received[/]([0-9]+)/);
+  if(w){var report=function(){var el=document.querySelector(".woocommerce-order-overview__total .amount, .order_details tfoot tr:last-child .amount, .woocommerce-table--order-details tfoot tr:last-child .amount");
+    var t=el?el.textContent.replace(/[^0-9,.]/g,"").replace(/^[.,]+/,""):"",d=Math.max(t.lastIndexOf(","),t.lastIndexOf("."));
+    var amt=t?(d>-1&&t.length-d-1<=2?parseFloat(t.slice(0,d).replace(/[,.]/g,"")+"."+t.slice(d+1)):parseFloat(t.replace(/[,.]/g,""))):0;
+    window.hysaConversion({orderId:w[1],amount:amt||0});};
+    if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",report);else report();}
 })();`;
+}
+
+async function voucherCode(env) {
+  const a = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  for (;;) {
+    const b = crypto.getRandomValues(new Uint8Array(5));
+    const code = "HY-" + [...b].map((x) => a[x % a.length]).join("");
+    if (!(await one(env, "voucher", code))) return code;
+  }
+}
+function voucherState(v, s) {
+  if (!v || v.deleted) return { ok: false, reason: "This code does not exist. Check the letters and try again." };
+  if (v.expiresAt && v.expiresAt < nowISO()) return { ok: false, reason: `This voucher expired on ${v.expiresAt.slice(0, 10)}.` };
+  const max = +s.voucherUses || 0;
+  if (max && (v.uses || []).length >= max) return { ok: false, reason: "This voucher has already been used." };
+  return { ok: true };
 }
 
 /* ---------- router ---------- */
@@ -144,6 +170,23 @@ async function api(req, env, url, path, method) {
     return json({ ok: true }, 200, cors);
   }
 
+  // Guest gets a personal voucher for an in-person offer
+  if (path === "/api/voucher" && method === "POST") {
+    const b = await body(req);
+    const p = await one(env, "partner", clean(b.partnerId, 60));
+    if (!p || !agreementActive(p)) return bad("This offer is not available right now.");
+    const name = clean(b.guestName, 120), email = clean(b.guestEmail, 160).toLowerCase();
+    if (!name || !email || !emailOk(email)) return bad("Please enter your name and a valid email.");
+    const s = await settings(env);
+    const existing = (await all(env, "voucher")).find((v) => v.partnerId === p.id && v.guestEmail === email && voucherState(v, s).ok);
+    const v = existing || {
+      id: await voucherCode(env), partnerId: p.id, guestName: name, guestEmail: email, guestPhone: clean(b.guestPhone, 40), stay: clean(b.stay, 120),
+      offer: p.discountText || "", expiresAt: new Date(Date.now() + (+s.voucherDays || 7) * 864e5).toISOString(), uses: [], createdAt: nowISO(), updatedAt: nowISO(),
+    };
+    if (!existing) await put(env, "voucher", v);
+    return json({ ok: true, code: v.id, partner: p.name, offer: v.offer, expiresAt: v.expiresAt, guestName: v.guestName, address: p.address || "" });
+  }
+
   // Partner signs up
   if (path === "/api/signup" && method === "POST") {
     const b = await body(req);
@@ -196,7 +239,7 @@ async function api(req, env, url, path, method) {
   }
 
   /* ---- partner portal (secret link) ---- */
-  const pm = path.match(/^\/api\/partner\/([A-Za-z0-9]{20,40})(\/[a-z-]+)?$/);
+  const pm = path.match(/^\/api\/partner\/([A-Za-z0-9]{20,40})(\/[a-z-]+(?:\/HY-[A-Z0-9]{5})?)?$/);
   if (pm) {
     const p = await partnerBy(env, "portalKey", pm[1]);
     if (!p) return bad("This partner link is not valid.", 404);
@@ -212,6 +255,29 @@ async function api(req, env, url, path, method) {
         sales: sales.filter((x) => x.partnerId === p.id && !x.deleted && x.review !== "rejected").map(({ guestEmail, guestPhone, ...x }) => x).sort((a, b) => (b.date || "").localeCompare(a.date || "")),
         invoices: invoices.filter((x) => x.partnerId === p.id && !x.deleted).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")),
       });
+    }
+    const vm = action.match(/^\/voucher\/(HY-[A-Z0-9]{5})$/);
+    if (vm && method === "GET") {
+      const v = await one(env, "voucher", vm[1]);
+      const st = voucherState(v, await settings(env));
+      if (v && v.partnerId !== p.id) return json({ ok: false, reason: "This voucher is for another business." });
+      if (!st.ok) return json(st);
+      return json({ ok: true, guestName: v.guestName, offer: v.offer || p.discountText || "", expiresAt: v.expiresAt, usedBefore: (v.uses || []).length });
+    }
+    if (action === "/redeem" && method === "POST") {
+      if (p.status !== "approved") return bad("Your partnership is not approved yet.");
+      const b = await body(req);
+      const code = clean(b.code, 12).toUpperCase().replace(/^HY(?!-)/, "HY-");
+      const v = await one(env, "voucher", code);
+      const s = await settings(env);
+      if (v && v.partnerId !== p.id) return bad("This voucher is for another business.");
+      const st = voucherState(v, s);
+      if (!st.ok) return bad(st.reason);
+      if (!(+b.amount > 0)) return bad("Please enter the amount the guest pays.");
+      const sale = newSale(p, { date: today(), amount: +b.amount, persons: b.persons, orderRef: b.orderRef, guestName: v.guestName, guestEmail: v.guestEmail, guestPhone: v.guestPhone }, "voucher", { voucherId: v.id, partnerReported: true, notifiedAt: nowISO() });
+      v.uses = [...(v.uses || []), { saleId: sale.id, at: nowISO(), amount: sale.amount }]; v.updatedAt = nowISO();
+      await env.DB.batch([putStmt(env, "sale", sale), putStmt(env, "voucher", v)]);
+      return json({ ok: true, guestName: v.guestName, commission: sale.commission });
     }
     if (action === "/sale" && method === "POST") {
       if (p.status !== "approved") return bad("Your partnership is not approved yet.");
@@ -258,17 +324,17 @@ async function api(req, env, url, path, method) {
   if (path.startsWith("/api/job/") && !job) return bad("Unauthorized", 401);
 
   if ((path === "/api/admin/data" || path === "/api/job/data") && method === "GET") {
-    const [partners, sales, invoices, s] = await Promise.all([all(env, "partner"), all(env, "sale"), all(env, "invoice"), settings(env)]);
+    const [partners, sales, invoices, vouchers, s] = await Promise.all([all(env, "partner"), all(env, "sale"), all(env, "invoice"), all(env, "voucher"), settings(env)]);
     const since = new Date(Date.now() - 30 * 864e5).toISOString();
     const cs = await env.DB.prepare("SELECT partner_id AS p, COUNT(*) AS n, SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS m FROM clicks GROUP BY partner_id").bind(since).all();
     const clickStats = Object.fromEntries(cs.results.map((r) => [r.p, { total: r.n, last30: r.m }]));
     const sync = (await one(env, "meta", "sync")) || { lastRun: null, log: [] };
-    return json({ origin: url.origin, settings: s, partners, sales, invoices, clickStats, sync });
+    return json({ origin: url.origin, settings: s, partners, sales, invoices, vouchers, clickStats, sync });
   }
   if ((path === "/api/admin/upsert" || path === "/api/job/upsert") && method === "POST") {
     const b = await body(req);
     const docs = Array.isArray(b.docs) ? b.docs.slice(0, 500) : [];
-    const kinds = ["partner", "sale", "invoice", "settings", "meta"];
+    const kinds = ["partner", "sale", "invoice", "voucher", "settings", "meta"];
     const stmts = [];
     for (const d of docs) {
       if (!kinds.includes(d.kind) || !d.doc?.id) continue;

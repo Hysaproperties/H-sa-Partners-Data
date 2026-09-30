@@ -37,7 +37,7 @@ section.cat>h2{font:700 .78rem var(--f-body);text-transform:uppercase;letter-spa
   <header class="site-h">
     <span class="mark">Hýsa · Guest guide</span>
     <h1>Local favourites for your stay</h1>
-    <p class="lead">Restaurants, car rental, tours and places we recommend to our guests. Book through the buttons below and you are all set.</p>
+    <p class="lead">Restaurants, car rental, tours and places we recommend to our guests. Book online through the buttons below, or get your personal guest offer on your phone before you pay in person.</p>
   </header>
   <nav class="filters" id="filters" aria-label="Categories"></nav>
   <main id="list"><p class="muted">Loading the guide…</p></main>
@@ -68,7 +68,9 @@ function render(){
     </dl>
   </div><div class="side">
     ${p.discountText||p.discountCode?`<div class="offer"><small>Hýsa guest offer</small>${p.discountText?`<span>${esc(p.discountText)}</span>`:""}${p.discountCode?`<div class="r"><b>${esc(p.discountCode)}</b><button data-copy="${esc(p.discountCode)}">Copy code</button></div>`:""}</div>`:""}
-    ${p.go?`<a class="btn pri lg" href="${esc(p.go)}" target="_blank" rel="noopener">Visit &amp; book</a>`:p.phone?`<a class="btn lg" href="tel:${esc(p.phone.replace(/\s+/g,""))}">Call to book</a>`:""}
+    ${p.go?`<a class="btn pri lg" href="${esc(p.go)}" target="_blank" rel="noopener">Visit &amp; book online</a>`:""}
+    ${p.discountText?`<a class="btn lg${p.go?"":" pri"}" href="/voucher.html?p=${encodeURIComponent(p.slug)}">Get offer for in-person visit</a>`:""}
+    ${!p.go&&!p.discountText&&p.phone?`<a class="btn lg" href="tel:${esc(p.phone.replace(/\s+/g,""))}">Call to book</a>`:""}
   </div></article>`).join("")}</section>`).join("");
 }
 document.addEventListener("click",async e=>{const b=e.target.closest("button");if(!b)return;

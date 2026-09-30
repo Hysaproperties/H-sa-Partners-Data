@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Hýsa Guest Offer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@600;700;800&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+.ticket{background:var(--surface);border:2px solid var(--accent);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+.ticket .top{background:var(--accent);color:var(--accent-ink);padding:16px 20px;display:flex;justify-content:space-between;gap:10px;align-items:center}
+.ticket .top b{font:800 1.05rem var(--f-display);letter-spacing:.02em}
+.ticket .body{padding:22px 20px;display:flex;flex-direction:column;gap:14px;align-items:center;text-align:center}
+.code{font:600 clamp(2.4rem,11vw,3.4rem)/1 var(--f-mono);letter-spacing:.08em;color:var(--fg)}
+.offer{background:var(--money-soft);color:var(--money);border-radius:8px;padding:10px 14px;font-weight:700;font-size:1.05rem}
+.meta{display:grid;grid-template-columns:auto auto;gap:4px 14px;font-size:.9rem;text-align:left}
+.meta span:nth-child(odd){color:var(--muted)}
+.step{display:flex;gap:10px;align-items:flex-start;font-size:.95rem}
+.step b{flex:none;width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-size:.85rem}
+</style>
+</head>
+<body>
+<div class="wrap" style="max-width:560px">
+  <header class="site-h"><a class="mark" href="/" style="text-decoration:none">Hýsa · Guest guide</a><h1 id="h">Your guest offer</h1><p class="lead" id="lead"></p></header>
+  <main id="main" class="stack"><p class="muted">Loading…</p></main>
+  <footer class="site"><a href="/">Back to the guide</a></footer>
+</div>
+<script>
+const $=s=>document.querySelector(s);const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const slug=new URLSearchParams(location.search).get("p")||"";let P=null;
+const store=k=>{try{return JSON.parse(localStorage.getItem("hysa-v-"+k)||"null")}catch(e){return null}};
+const keep=(k,v)=>{try{localStorage.setItem("hysa-v-"+k,JSON.stringify(v))}catch(e){}};
+function ticket(v){
+  $("#h").textContent=v.partner;$("#lead").textContent="Show this screen to the staff before you pay.";
+  $("#main").innerHTML=`
+  <div class="ticket"><div class="top"><b>HÝSA GUEST VOUCHER</b><span>${esc(v.partner)}</span></div>
+  <div class="body">
+    ${v.offer?`<div class="offer">${esc(v.offer)}</div>`:""}
+    <div class="code">${esc(v.code)}</div>
+    <div class="meta"><span>Guest</span><span>${esc(v.guestName)}</span><span>Valid until</span><span>${new Date(v.expiresAt).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"})}</span>${v.address?`<span>Where</span><span>${esc(v.address)}</span>`:""}</div>
+  </div></div>
+  <div class="panel panel-b stack" style="gap:10px">
+    <div class="step"><b>1</b><span>Tell the staff you are a Hýsa guest <strong>before you pay</strong> and show this code.</span></div>
+    <div class="step"><b>2</b><span>They enter the code and apply your offer.</span></div>
+    <div class="step"><b>3</b><span>Enjoy. We also email you the code, so you have it later.</span></div>
+  </div>
+  <button class="btn" id="other">Get the offer for another guest</button>`;
+  $("#other").onclick=()=>{try{localStorage.removeItem("hysa-v-"+slug)}catch(e){}form()};
+}
+function form(){
+  $("#h").textContent=P.name;$("#lead").textContent=P.discountText?`Hýsa guest offer: ${P.discountText}`:"Get your personal Hýsa guest voucher.";
+  $("#main").innerHTML=`<form id="f" class="panel panel-b form" novalidate>
+    <p class="full" style="margin:0">Get your personal voucher now and show it <b>before you pay</b>. It takes 20 seconds.</p>
+    <label class="f full">Your name<input id="n" autocomplete="name" required></label>
+    <label class="f full">Your email<input id="e" type="email" autocomplete="email" required></label>
+    <label class="f">Phone <span class="hint">optional</span><input id="ph" type="tel" autocomplete="tel"></label>
+    <label class="f">Where you stay <span class="hint">optional</span><input id="st"></label>
+    <div class="full" id="msg"></div>
+    <div class="full"><button class="btn pri lg" style="width:100%">Get my voucher</button></div></form>`;
+  $("#f").onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector("button");const v=id=>$("#"+id).value.trim();
+    if(!v("n")||!v("e")){$("#msg").innerHTML='<div class="notice bad">Please enter your name and email.</div>';return}
+    b.disabled=true;b.textContent="Getting your voucher…";
+    try{const r=await fetch("/api/voucher",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({partnerId:P.id,guestName:v("n"),guestEmail:v("e"),guestPhone:v("ph"),stay:v("st")})});const j=await r.json();if(!r.ok)throw new Error(j.error||"Please try again");
+      keep(slug,j);ticket(j)}catch(err){$("#msg").innerHTML=`<div class="notice bad">${esc(err.message)}</div>`;b.disabled=false;b.textContent="Get my voucher"}};
+}
+fetch("/api/public").then(r=>r.json()).then(j=>{P=(j.partners||[]).find(p=>p.slug===slug);
+  if(!P){$("#main").innerHTML='<div class="notice warn">This offer is not available. <a href="/">See the guide</a>.</div>';return}
+  const saved=store(slug);if(saved&&saved.expiresAt>new Date().toISOString())ticket(saved);else form()});
+</script>
+</body>
+</html>

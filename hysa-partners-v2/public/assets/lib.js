@@ -14,7 +14,7 @@ export function defaultSettings() {
     id: "main", company: "Hýsa Sp/f", address: "Heygsvegur 33, Tórshavn, Faroe Islands", companyId: "",
     invoiceEmail: "hysa@hysa.fo", notifyEmail: "hysa@hysa.fo", invoicePrefix: "HYSA-AFF",
     bankName: "Betri Banki", bankReg: "9181", bankAccount: "5763233", iban: "FO6691810006131923", bic: "EIKBFOTF",
-    vatRate: 25, paymentDays: 8, invoiceDay: 1, autoInvoice: true, defaultRate: 10, cookieDays: 30,
+    vatRate: 25, paymentDays: 8, invoiceDay: 1, autoInvoice: true, defaultRate: 10, cookieDays: 30, voucherDays: 7, voucherUses: 0,
     updatedAt: "1970-01-01T00:00:00.000Z",
   };
 }
@@ -55,6 +55,7 @@ export function withParams(url, params) {
   const [base, hash] = u.split("#");
   return base + (base.includes("?") ? "&" : "?") + q + (hash ? "#" + hash : "");
 }
+export const normRef = (r) => String(r || "").replace(/^#/, "").trim().toLowerCase();
 export const billable = (s) => !s.deleted && s.review !== "pending" && s.review !== "rejected";
 
 export function publicPartner(p) {
@@ -92,7 +93,7 @@ export function createInvoice({ invoices, settings, partner, sales, from, to, au
   return inv;
 }
 
-const howLabel = (s) => ({ shopify: "Online (Shopify, via Hýsa link)", woocommerce: "Online (webshop, via Hýsa link)", script: "Online (via Hýsa link)", partner: "In person, reported by you", guest: "In person, receipt from guest", admin: "Registered by Hýsa" }[s.source] || "Referral");
+const howLabel = (s) => ({ shopify: "Online (Shopify, via Hýsa link)", woocommerce: "Online (webshop, via Hýsa link)", script: "Online (via Hýsa link)", partner: "In person, reported by you", voucher: "In person, Hýsa guest voucher", guest: "In person, receipt from guest", admin: "Registered by Hýsa" }[s.source] || "Referral");
 
 export function saleEmail(sale, partner, settings) {
   const co = settings?.company || "Hýsa Sp/f";

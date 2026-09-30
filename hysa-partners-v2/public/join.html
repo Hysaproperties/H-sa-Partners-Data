@@ -70,22 +70,22 @@ const HELP={
    <li>In Shopify admin go to <b>Settings → Apps and sales channels → Develop apps → Create an app</b>, name it "Hýsa".</li>
    <li>Under <b>Configuration → Admin API scopes</b> tick only <b>read_orders</b>. Save and click <b>Install app</b>.</li>
    <li>Copy the <b>Admin API access token</b> (starts with shpat_) and paste it below.</li></ol>
-   <p class="sm">This access can only read orders. It cannot change anything, and you can remove it at any time.</p></div>
+   <p class="sm">This access can only read orders. It cannot change anything, and you can remove it at any time. After sign-up, your partner page also gives you one line of code for your shop theme, so guests who come back later are counted too.</p></div>
    <label class="f">Shop address<input id="shop" class="mono" placeholder="yourshop.myshopify.com"></label>
    <label class="f">Admin API access token<input id="token" class="mono" placeholder="shpat_…" autocomplete="off"></label></div>`,
  woocommerce:`<div class="form" style="grid-template-columns:1fr 1fr"><div class="full"><ol class="howto">
    <li>In WordPress go to <b>WooCommerce → Settings → Advanced → REST API → Add key</b>.</li>
    <li>Description "Hýsa", Permissions <b>Read</b>. Click <b>Generate API key</b>.</li>
    <li>Paste the Consumer key and Consumer secret below. Keep <b>Order attribution</b> switched on (WooCommerce → Settings → Advanced → Features).</li></ol>
-   <p class="sm">This key can only read orders and can be revoked at any time.</p></div>
+   <p class="sm">This key can only read orders and can be revoked at any time. After sign-up, your partner page also gives you one line of code for your site header, so guests who come back later are counted too.</p></div>
    <label class="f full">Shop URL<input id="shopUrl" class="mono" placeholder="https://yourshop.fo"></label>
    <label class="f">Consumer key<input id="key" class="mono" placeholder="ck_…" autocomplete="off"></label>
    <label class="f">Consumer secret<input id="secret" class="mono" placeholder="cs_…" autocomplete="off"></label></div>`,
  script:`<div class="notice">After sign-up you get a short piece of code for your website and your order confirmation page. Your web developer can add it in about ten minutes. It only reports bookings made by guests who arrived through your Hýsa link.</div>`,
- none:`<div class="notice">When a Hýsa guest pays in person, you register the purchase on your partner page (date, amount, receipt number). It takes a few seconds. Guests can also send us their receipt.</div>`};
+ none:`<div class="notice">Hýsa guests get a personal voucher code on their phone for your guest offer. Before they pay, you enter the code and the amount on your partner page. It takes a few seconds and confirms the guest came from Hýsa. You only give the offer when the code is valid.</div>`};
 fetch("/api/public").then(r=>r.json()).then(j=>{
   $("#category").innerHTML=(j.categories||["Other"]).map(c=>`<option>${esc(c)}</option>`).join("");
-  $("#terms").innerHTML=`Commission: <b>${+j.defaultRate||10}% of what Hýsa guests spend</b> (excl. VAT), unless we agree otherwise when we approve you. We invoice once a month with 8 days payment terms. Purchases count when the guest came through your Hýsa link or used a Hýsa code, and in-person purchases you register or that a guest documents with a receipt. You can end the partnership at any time.`;
+  $("#terms").innerHTML=`Commission: <b>${+j.defaultRate||10}% of what Hýsa guests spend</b> (excl. VAT), unless we agree otherwise when we approve you. We invoice once a month with 8 days payment terms. Purchases count when the guest came through your Hýsa link or used a Hýsa code, and in-person purchases made with a Hýsa guest voucher or that you register. You can end the partnership at any time.`;
 });
 $("#sys").innerHTML=SYS.map(([k,t,d],i)=>`<label><input type="radio" name="system" value="${k}" ${i===3?"checked":""}><span><b>${t}</b><small>${d}</small></span></label>`).join("");
 const showHelp=()=>{$("#sysHelp").innerHTML=HELP[document.querySelector('input[name=system]:checked').value]};showHelp();

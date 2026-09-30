@@ -58,7 +58,7 @@ const touch=o=>{o.updatedAt=L.nowISO();return o};
 
 /* ---------- api ---------- */
 async function api(path,opt={}){const r=await fetch(API+path,{credentials:"include",headers:{"Content-Type":"application/json"},...opt});const j=await r.json().catch(()=>({}));if(r.status===401){renderLogin();throw new Error("Please log in")}if(!r.ok)throw new Error(j.error||"Request failed");return j}
-function snapshot(){S.snap.clear();for(const [k,arr] of [["partner",S.data.partners],["sale",S.data.sales],["invoice",S.data.invoices]])for(const d of arr)S.snap.set(k+":"+d.id,JSON.stringify(d));S.snap.set("settings:main",JSON.stringify(S.data.settings))}
+function snapshot(){S.snap.clear();for(const [k,arr] of [["partner",S.data.partners],["sale",S.data.sales],["invoice",S.data.invoices]])for(const d of arr||[])S.snap.set(k+":"+d.id,JSON.stringify(d));S.snap.set("settings:main",JSON.stringify(S.data.settings))}
 async function load(){S.data=await api("/api/admin/data");snapshot();renderShell()}
 let saveTimer,saveQ=Promise.resolve();
 function commit(){render();clearTimeout(saveTimer);saveTimer=setTimeout(()=>{saveQ=saveQ.then(doSave)},300)}
@@ -101,7 +101,7 @@ function render(){
   if(f){const el=document.getElementById(f);if(el&&m.contains(el)){el.focus();try{el.setSelectionRange(pos,pos)}catch(e){}}}
 }
 const statusChip=s=>s.review==="pending"?'<span class="chip warn">Needs approval</span>':s.review==="rejected"?'<span class="chip bad">Rejected</span>':s.status==="paid"?'<span class="chip ok">Paid</span>':s.status==="invoiced"?'<span class="chip info">Invoiced</span>':'<span class="chip">Next invoice</span>';
-const howChip=s=>({shopify:'<span class="chip info">Online · Shopify</span>',woocommerce:'<span class="chip info">Online · WooCommerce</span>',script:'<span class="chip info">Online · website</span>',partner:'<span class="chip acc">In person · partner</span>',guest:'<span class="chip acc">In person · guest receipt</span>',admin:'<span class="chip">Added by Hýsa</span>'}[s.source]||"");
+const howChip=s=>({shopify:'<span class="chip info">Online · Shopify</span>',woocommerce:'<span class="chip info">Online · WooCommerce</span>',script:'<span class="chip info">Online · website</span>',partner:'<span class="chip acc">In person · partner</span>',voucher:'<span class="chip acc">In person · voucher</span>',guest:'<span class="chip acc">In person · guest receipt</span>',admin:'<span class="chip">Added by Hýsa</span>'}[s.source]||"");
 const pStatus=p=>p.status==="pending"?'<span class="chip warn">Awaiting approval</span>':p.status==="rejected"?'<span class="chip bad">Rejected</span>':L.agreementActive(p)?'<span class="chip ok">Live</span>':'<span class="chip">Inactive</span>';
 const trackChip=p=>{const i=p.integration||{};if(i.type==="shopify"||i.type==="woocommerce")return i.lastError?'<span class="chip bad">Error</span>':(i.token||i.key)?`<span class="chip acc">${L.SYSTEMS[i.type]}</span>`:'<span class="chip warn">Not connected</span>';if(i.type==="script")return p.lastConversionAt?'<span class="chip acc">Tracking code</span>':'<span class="chip warn">Code not seen yet</span>';return '<span class="chip">In person</span>'};
 function totals(list){let earned=0,open=0,inv=0,rev=0;for(const s of list){if(!L.billable(s))continue;const c=+s.commission||0;earned+=c;rev+=+s.amount||0;if(s.status==="invoiced")inv+=c;else if(s.status!=="paid")open+=c}return{earned,open,inv,rev}}
@@ -205,7 +205,9 @@ function vSettings(){
     <label class="f">Copy of all emails to<input id="stMail" type="email" value="${esc(st.notifyEmail)}"></label>
     <div class="sect"><h3>Partners and tracking</h3></div>
     <label class="f">Standard commission for new sign-ups (%)<input id="stRate" type="number" step="0.1" min="0" value="${esc(st.defaultRate)}"></label>
-    <label class="f">Days a link click counts<input id="stDays" type="number" min="1" max="90" value="${esc(st.cookieDays)}"></label>
+    <label class="f">Days a link click counts <span class="hint">iPhones keep it max 7 days</span><input id="stDays" type="number" min="1" max="400" value="${esc(st.cookieDays)}"></label>
+    <label class="f">Guest voucher valid (days)<input id="stVDays" type="number" min="1" max="60" value="${esc(st.voucherDays??7)}"></label>
+    <label class="f">Uses per voucher <span class="hint">0 = unlimited while valid</span><input id="stVUses" type="number" min="0" max="20" value="${esc(st.voucherUses??0)}"></label>
     <div class="sect"><h3>Invoicing</h3></div>
     <label class="f">Invoices sent from<input id="stInvMail" type="email" value="${esc(st.invoiceEmail)}"></label>
     <label class="f">Invoice number prefix<input id="stPrefix" value="${esc(st.invoicePrefix)}"></label>
@@ -269,7 +271,7 @@ function partnerDetail(id){
   openDrawer(p.name,`
   ${p.status==="pending"?`<div class="notice warn stack" style="gap:10px"><b>Signed up ${fdate(p.signupAt)}. Check the details and commission, then approve.</b><div class="row"><button class="btn pri" data-act="approve" data-id="${p.id}">Approve at ${esc(L.agrLabel(p))}</button><button class="btn" data-act="edit-partner" data-id="${p.id}">Change commission first</button><button class="btn danger" data-act="reject" data-id="${p.id}">Reject</button></div></div>`:""}
   <div class="row">${pStatus(p)}<span class="chip">${esc(p.category)}</span><span class="chip money">${esc(L.agrLabel(p))}</span>${trackChip(p)}</div>
-  <div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr))"><div class="kpi"><span class="eyebrow">Clicks 30d</span><span class="v" style="font-size:1.2rem">${k.last30}</span><span class="d">${k.total} in total</span></div><div class="kpi money"><span class="eyebrow">Earned</span><span class="v" style="font-size:1.2rem">${fmt(t.earned,p.currency)}</span></div><div class="kpi"><span class="eyebrow">Next invoice</span><span class="v" style="font-size:1.2rem">${fmt(t.open,p.currency)}</span></div></div>
+  <div class="kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))"><div class="kpi"><span class="eyebrow">Clicks 30d</span><span class="v" style="font-size:1.2rem">${k.last30}</span><span class="d">${k.total} in total</span></div><div class="kpi"><span class="eyebrow">Vouchers</span><span class="v" style="font-size:1.2rem">${(S.data.vouchers||[]).filter(v=>v.partnerId===id).length}</span><span class="d">${(S.data.vouchers||[]).filter(v=>v.partnerId===id&&(v.uses||[]).length).length} used</span></div><div class="kpi money"><span class="eyebrow">Earned</span><span class="v" style="font-size:1.2rem">${fmt(t.earned,p.currency)}</span></div><div class="kpi"><span class="eyebrow">Next invoice</span><span class="v" style="font-size:1.2rem">${fmt(t.open,p.currency)}</span></div></div>
   <section class="panel"><div class="panel-b dl">
     <span>Contact</span><span>${esc(p.contactName||"—")} · ${esc(p.email||"—")}</span><span>Invoice email</span><span>${esc(p.invoiceEmail||p.email||"—")}</span><span>Company no.</span><span>${esc(p.companyId||"—")}</span>
     <span>Website</span><span>${esc(p.website||"—")}</span><span>Phone</span><span>${esc(p.phone||"—")}</span><span>Address</span><span>${esc(p.address||"—")}</span><span>Opening hours</span><span>${esc(p.hours||"—")}</span>
@@ -311,7 +313,7 @@ function saleDetail(id){
     <span>Date</span><span>${fdate(s.date)}</span><span>How</span><span>${howChip(s)} ${s.matchedBy?`<span class="sm">${esc(s.matchedBy)}</span>`:""}</span>
     <span>Order / receipt</span><span class="mono">${esc(s.orderRef||"—")}</span><span>Purchase</span><span class="mono">${fmt(s.amount,s.currency)} · ${esc(s.persons||1)} persons</span>
     <span>Guest</span><span>${esc(s.guestName||"—")}</span><span>Guest contact</span><span>${esc(s.guestEmail||"—")} · ${esc(s.guestPhone||"—")}</span>
-    <span>Confirmed by</span><span>${[s.partnerReported?"partner":"",s.guestReceiptId?"guest receipt":"",["shopify","woocommerce","script"].includes(s.source)?"partner's order system":""].filter(Boolean).join(" + ")||"Hýsa"}</span>
+    <span>Confirmed by</span><span>${[s.voucherId?`guest voucher ${esc(s.voucherId)}`:"",s.partnerReported?"partner":"",s.guestReceiptId?"guest receipt":"",["shopify","woocommerce","script"].includes(s.source)?"partner's order system":""].filter(Boolean).join(" + ")||"Hýsa"}</span>
     <span>Status</span><span>${statusChip(s)}</span><span>Partner emailed</span><span>${s.notifiedAt?fdate(s.notifiedAt):"Within the hour"}</span>${s.notes?`<span>Notes</span><span>${esc(s.notes)}</span>`:""}
   </div></section>
   ${s.guestReceiptId?`<section class="panel"><div class="panel-h"><h3>Guest's receipt</h3><a class="btn sm" href="${API}/api/admin/file/${esc(s.guestReceiptId)}" target="_blank" rel="noopener">Open full size</a></div><div class="panel-b"><img class="receipt-img" src="${API}/api/admin/file/${esc(s.guestReceiptId)}" alt="Receipt photo"></div></section>`:""}
@@ -406,7 +408,7 @@ document.addEventListener("submit",e=>{
       guestName:v("sGName"),guestEmail:v("sGMail"),guestPhone:v("sGPhone"),currency:p.currency||"DKK",commission:L.commission(p,amount,persons),rateLabel:L.agrLabel(p),updatedAt:ts};
     if(old)Object.assign(old,s);else S.data.sales.push(s);commit();saleDetail(s.id);toast("Saved");
   }
-  if(f.id==="setForm"){const st=S.data.settings;Object.assign(st,{company:v("stCompany"),companyId:v("stCid"),address:v("stAddr"),notifyEmail:v("stMail"),defaultRate:+v("stRate")||0,cookieDays:+v("stDays")||30,
+  if(f.id==="setForm"){const st=S.data.settings;Object.assign(st,{company:v("stCompany"),companyId:v("stCid"),address:v("stAddr"),notifyEmail:v("stMail"),defaultRate:+v("stRate")||0,cookieDays:+v("stDays")||30,voucherDays:+v("stVDays")||7,voucherUses:Math.max(0,+v("stVUses")||0),
     invoiceEmail:v("stInvMail"),invoicePrefix:v("stPrefix")||"HYSA-AFF",vatRate:+v("stVat")||0,paymentDays:+v("stPay")||8,invoiceDay:Math.min(28,Math.max(1,+v("stDay")||1)),autoInvoice:f.querySelector("#stAuto").checked,
     bankName:v("stBank"),bankReg:v("stReg"),bankAccount:v("stAcc"),iban:v("stIban"),bic:v("stBic"),id:"main",updatedAt:L.nowISO()});commit();toast("Settings saved")}
 });

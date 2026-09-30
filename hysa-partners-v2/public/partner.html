@@ -29,19 +29,22 @@ async function load(){
   D=await r.json();render();
 }
 function snippet(){return `<!-- 1. On every page of your website, inside <head> -->
-<script src="${D.origin}/t.js" data-partner="${D.partner.trackKey}"></script>
+<script src="${D.origin}/t.js" data-partner="${D.partner.trackKey}"><\/script>
 
 <!-- 2. On your order / booking confirmation page, below line 1.
      Replace the values with your system's order number and total excl. VAT. -->
 <script>
   hysaConversion({ orderId: "ORDER-NUMBER", amount: 1234.00, currency: "DKK" });
-</script>`}
+<\/script>`}
 function render(){
   const p=D.partner;$("#title").textContent=p.name;
   $("#status").innerHTML=p.status==="approved"?`<div class="row"><span class="chip ok">Approved partner</span><span class="chip money">${esc(p.agreementLabel)} + ${D.vatRate}% VAT</span></div>`:p.status==="rejected"?'<span class="chip bad">Not approved</span>':'<div class="notice warn">Your sign-up is waiting for approval. We will email you when you are live in the guest guide.</div>';
   const due=D.sales.filter(s=>s.status==="open"&&s.review!=="pending").reduce((a,s)=>a+(+s.commission||0),0);
   const it=p.integration||{};
   $("#main").innerHTML=`
+  ${p.status==="approved"?`<section class="panel" style="border:2px solid var(--accent)"><div class="panel-h"><h3>Redeem a Hýsa guest voucher</h3><span class="sm">Before the guest pays</span></div><div class="panel-b">
+    <form id="vCheck" class="row" style="align-items:flex-end"><label class="f" style="flex:1;min-width:180px">Voucher code<input id="vCode" class="mono" placeholder="HY-XXXXX" autocomplete="off" style="font-size:1.2rem;text-transform:uppercase"></label><button class="btn pri lg">Check</button></form>
+    <div id="vResult" style="margin-top:14px"></div></div></section>`:""}
   <div class="kpis">
     <div class="kpi"><span class="eyebrow">Guests sent to you</span><span class="v">${D.clicks.last30}</span><span class="d">clicks on your link, last 30 days (${D.clicks.total} in total)</span></div>
     <div class="kpi"><span class="eyebrow">Purchases by Hýsa guests</span><span class="v">${D.sales.length}</span><span class="d">${fmt(D.sales.reduce((a,s)=>a+(+s.amount||0),0))} in sales</span></div>
@@ -91,20 +94,31 @@ function render(){
     </form></div></section>`;
   renderIntegration();
 }
+function snippetShop(){return `<!-- Add to every page, inside <head> -->
+<script src="${D.origin}/t.js" data-partner="${D.partner.trackKey}"><\/script>`}
+const rememberBox=t=>`<div class="stack" style="gap:8px;margin-top:6px"><b style="font-size:.92rem">Recommended: remember guests who come back later</b><p class="sm" style="margin:0">${t==="shopify"?"Shopify admin → Online Store → Themes → ⋯ → Edit code → <b>theme.liquid</b>. Paste this line just before <b>&lt;/head&gt;</b> and save.":"WordPress: paste this line into the site header, for example with the free plugin \"WPCode\" (Header section)."} Guests who click your Hýsa link and book later on the same device are then counted too.</p><pre class="code">${esc(snippetShop())}</pre><div><button class="btn sm" data-copy-shop>Copy code</button></div></div>`;
 function renderIntegration(){
   const t=$("#iType").value,it=D.partner.integration||{};
-  $("#iBox").innerHTML=t==="shopify"?`<form id="iForm" class="form"><label class="f">Shop address<input id="iShop" class="mono" value="${esc(it.shop)}" placeholder="yourshop.myshopify.com"></label><label class="f">Admin API access token<input id="iToken" class="mono" placeholder="${it.connected?"Saved. Paste a new one to replace":"shpat_…"}" autocomplete="off"></label><p class="sm full" style="margin:0">Shopify admin → Settings → Apps and sales channels → Develop apps → Create app "Hýsa" → Admin API scope <b>read_orders</b> → Install → copy the token.</p><div class="full"><button class="btn pri">Save connection</button></div></form>`
-  :t==="woocommerce"?`<form id="iForm" class="form"><label class="f full">Shop URL<input id="iUrl" class="mono" value="${esc(it.url)}" placeholder="https://yourshop.fo"></label><label class="f">Consumer key<input id="iKey" class="mono" placeholder="${it.connected?"Saved":"ck_…"}" autocomplete="off"></label><label class="f">Consumer secret<input id="iSecret" class="mono" placeholder="${it.connected?"Saved":"cs_…"}" autocomplete="off"></label><p class="sm full" style="margin:0">WooCommerce → Settings → Advanced → REST API → Add key, permission <b>Read</b>. Keep Order attribution switched on.</p><div class="full"><button class="btn pri">Save connection</button></div></form>`
+  $("#iBox").innerHTML=t==="shopify"?`<form id="iForm" class="form"><label class="f">Shop address<input id="iShop" class="mono" value="${esc(it.shop)}" placeholder="yourshop.myshopify.com"></label><label class="f">Admin API access token<input id="iToken" class="mono" placeholder="${it.connected?"Saved. Paste a new one to replace":"shpat_…"}" autocomplete="off"></label><p class="sm full" style="margin:0">Shopify admin → Settings → Apps and sales channels → Develop apps → Create app "Hýsa" → Admin API scope <b>read_orders</b> → Install → copy the token.</p><div class="full"><button class="btn pri">Save connection</button></div></form>${rememberBox("shopify")}`
+  :t==="woocommerce"?`<form id="iForm" class="form"><label class="f full">Shop URL<input id="iUrl" class="mono" value="${esc(it.url)}" placeholder="https://yourshop.fo"></label><label class="f">Consumer key<input id="iKey" class="mono" placeholder="${it.connected?"Saved":"ck_…"}" autocomplete="off"></label><label class="f">Consumer secret<input id="iSecret" class="mono" placeholder="${it.connected?"Saved":"cs_…"}" autocomplete="off"></label><p class="sm full" style="margin:0">WooCommerce → Settings → Advanced → REST API → Add key, permission <b>Read</b>. Keep Order attribution switched on.</p><div class="full"><button class="btn pri">Save connection</button></div></form>${rememberBox("woocommerce")}`
   :t==="script"?`<p class="sm" style="margin:0">Give this to your web developer. It only reports bookings from guests who came through your Hýsa link in the last ${D.cookieDays} days.</p><pre class="code" id="snip">${esc(snippet())}</pre><div class="row"><button class="btn sm" data-copy-snip>Copy code</button><button class="btn sm pri" data-save-type="script">Use this method</button></div>`
   :`<p class="sm" style="margin:0">Register in-person purchases with the form on this page.</p>${it.type!=="none"?'<button class="btn sm pri" data-save-type="none">Use this method</button>':""}`;
 }
 async function post(path,data){const r=await fetch(`/api/partner/${encodeURIComponent(key)}${path}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||"Could not save");return j}
 document.addEventListener("change",e=>{if(e.target.id==="iType")renderIntegration()});
 document.addEventListener("click",async e=>{const b=e.target.closest("button");if(!b)return;
+  if(b.hasAttribute("data-copy-shop")){try{await navigator.clipboard.writeText(snippetShop());toast("Code copied")}catch(_){toast("Select the code and copy it")}}
   if(b.hasAttribute("data-copy-snip")){try{await navigator.clipboard.writeText(snippet());toast("Code copied")}catch(_){toast("Select the code and copy it")}}
   if(b.dataset.saveType){try{await post("/update",{integration:{type:b.dataset.saveType}});toast("Saved");load()}catch(err){toast(err.message)}}});
 document.addEventListener("submit",async e=>{e.preventDefault();const f=e.target,v=id=>(f.querySelector("#"+id)?.value||"").trim();const btn=f.querySelector("button");btn.disabled=true;
   try{
+    if(f.id==="vCheck"){let code=v("vCode").toUpperCase().replace(/\s+/g,"");if(/^HY[A-Z0-9]{5}$/.test(code))code="HY-"+code.slice(2);
+      const r=await fetch(`/api/partner/${encodeURIComponent(key)}/voucher/${encodeURIComponent(code)}`);const j=await r.json().catch(()=>({ok:false,reason:"Not a valid code."}));
+      $("#vResult").innerHTML=!j.ok?`<div class="notice bad"><b>Not valid.</b> ${esc(j.reason||"Check the code.")} Do not give the Hýsa offer.</div>`:`
+        <div class="notice ok" style="font-size:1rem"><b>Valid voucher for ${esc(j.guestName)}.</b> Give the guest: <b>${esc(j.offer||"the Hýsa offer")}</b>${j.usedBefore?` <span class="sm">(used ${j.usedBefore} time(s) before)</span>`:""}</div>
+        <form id="vRedeem" class="form" data-code="${esc(code)}" style="margin-top:12px"><label class="f">Amount the guest pays (${esc(D.partner.currency||"DKK")})<input id="vAmount" type="number" step="0.01" min="0" inputmode="decimal" required></label><label class="f">Receipt no. <span class="hint">optional</span><input id="vRef"></label><div class="full"><button class="btn pri lg">Register purchase</button></div></form>`;
+      $("#vAmount")?.focus();return}
+    if(f.id==="vRedeem"){const j=await post("/redeem",{code:f.dataset.code,amount:+v("vAmount"),orderRef:v("vRef")});$("#vResult").innerHTML=`<div class="notice ok"><b>Registered.</b> Thank you. The purchase by ${esc(j.guestName)} is saved.</div>`;$("#vCode").value="";setTimeout(load,1500);return}
     if(f.id==="saleForm"){const j=await post("/sale",{date:v("sDate"),amount:+v("sAmount"),orderRef:v("sRef"),persons:+v("sPersons")||1,guestName:v("sGuest")});toast(j.matchedGuestReceipt?"Registered and matched with the guest's receipt":"Purchase registered");await load();return}
     if(f.id==="iForm"){await post("/update",{integration:{type:$("#iType").value,shop:v("iShop"),token:v("iToken"),url:v("iUrl"),key:v("iKey"),secret:v("iSecret")}});toast("Connection saved. We check for orders every hour.");await load();return}
     if(f.id==="infoForm"){await post("/update",{website:v("website"),phone:v("phone"),publicEmail:v("publicEmail"),address:v("address"),hours:v("hours"),description:v("description"),discountText:v("discountText"),discountCode:v("discountCode"),invoiceEmail:v("invoiceEmail")});toast("Listing saved");await load();return}
