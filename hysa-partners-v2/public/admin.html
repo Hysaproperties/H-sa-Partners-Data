@@ -116,7 +116,9 @@ function vOverview(){
   const sales=SA(),t=totals(sales),partners=P();
   const pend=partners.filter(p=>p.status==="pending"),rev=sales.filter(s=>s.review==="pending");
   const byP={};for(const s of sales.filter(L.billable)){byP[s.partnerId]=byP[s.partnerId]||{c:0,n:0};byP[s.partnerId].c+=+s.commission||0;byP[s.partnerId].n++}
-  const rows=partners.filter(p=>p.status==="approved").map(p=>({p,...(byP[p.id]||{c:0,n:0}),k:clicks(p.id)})).sort((a,b)=>b.c-a.c);const max=Math.max(1,...rows.map(r=>r.c));
+  const HO={red:0,yellow:1,blue:2,green:3};
+  const rows=partners.filter(p=>p.status!=="rejected").map(p=>({p,h:HL(p),...(byP[p.id]||{c:0,n:0}),k:clicks(p.id)})).sort((a,b)=>HO[a.h.level]-HO[b.h.level]||b.c-a.c);
+  const hc=l=>P().filter(p=>HL(p).level===l).length;const max=Math.max(1,...rows.map(r=>r.c));
   const sync=S.data.sync||{};const totalClicks=Object.values(S.data.clickStats||{}).reduce((a,c)=>a+c.last30,0);
   return `
   ${SA().some(s=>s.flagged==="not_registered")?`<div class="notice bad row spread"><span>${SA().filter(s=>s.flagged==="not_registered").length} purchase(s) confirmed by guests were not registered by the partner. They are included on the invoice.</span><button class="btn sm" data-tab="vouchers">See vouchers</button></div>`:""}
@@ -131,11 +133,11 @@ function vOverview(){
   <section class="panel"><div class="panel-h"><h3>Links to share</h3></div><div class="panel-b stack" style="gap:10px">
     ${[["Guest guide: send to every guest","/"],["Partner sign-up: send to businesses","/join.html"],["Receipt upload for guests","/receipt.html"]].map(([l,p])=>`<div class="row"><span style="min-width:220px" class="sm">${l}</span><span class="mono" style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(S.data.origin+p)}</span><button class="btn sm" data-copy="${esc(S.data.origin+p)}">Copy</button></div>`).join("")}
   </div></section>
-  <div class="grid2">
-    <section class="panel"><div class="panel-h"><h3>By partner</h3><span class="sm">${rows.length} live partners</span></div>
-      ${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Partner</th><th class="num">Clicks 30d</th><th class="num">Sales</th><th style="width:20%"></th><th class="num">Commission</th></tr></thead><tbody>
-      ${rows.map(r=>`<tr class="click" data-open-partner="${r.p.id}"><td><b>${esc(r.p.name)}</b><div class="sm">${esc(L.agrLabel(r.p))}</div></td><td class="num">${r.k.last30}</td><td class="num">${r.n}</td><td><div class="bar"><i style="width:${(r.c/max*100).toFixed(1)}%"></i></div></td><td class="num"><b>${fmt(r.c,r.p.currency)}</b></td></tr>`).join("")}
-      </tbody></table></div>`:emptyState("No live partners yet","Share the partner sign-up link, or add a partner yourself.","new-partner","Add partner")}
+  <div class="stack" style="gap:18px">
+    <section class="panel"><div class="panel-h"><h3>Partners</h3><span class="row" style="gap:6px">${["green","yellow","red","blue"].map(l=>`<button class="btn sm" data-pf-go="${l}" title="${L.HEALTH[l]}"><span class="chip ${HCLS[l]}" style="padding:0 6px">●</span> ${L.HEALTH[l]} · ${l==="blue"?P().filter(p=>HL(p).partnerChanges.length).length:hc(l)}</button>`).join("")}</span></div>
+      ${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Partner</th><th>Status</th><th class="num">Clicks 30d</th><th class="num">Sales</th><th class="num">Commission</th></tr></thead><tbody>
+      ${rows.map(r=>`<tr class="click" data-open-partner="${r.p.id}"><td><b>${esc(r.p.name)}</b><div class="sm">${esc(L.agrLabel(r.p))}</div></td><td>${hChip(r.h)}<div class="sm" style="max-width:420px">${esc(r.h.issues[0]?.text||(r.h.partnerChanges[0]?`Changed ${r.h.partnerChanges[0].label.toLowerCase()}`:""))}</div></td><td class="num">${r.k.last30}</td><td class="num">${r.n}</td><td class="num"><b>${fmt(r.c,r.p.currency)}</b></td></tr>`).join("")}
+      </tbody></table></div>`:emptyState("No partners yet","Share the partner sign-up link, or add a partner yourself.","new-partner","Add partner")}
     </section>
     <section class="panel"><div class="panel-h"><h3>Automatic checks</h3></div><div class="panel-b stack" style="gap:10px">
       <div class="sm">Last run: <b>${sync.lastRun?new Date(sync.lastRun).toLocaleString("en-GB"):"not run yet"}</b> · every hour. Fetches webshop orders, sends emails and monthly invoices.</div>
