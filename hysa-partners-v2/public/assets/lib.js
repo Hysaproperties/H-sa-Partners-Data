@@ -14,7 +14,7 @@ export function defaultSettings() {
     id: "main", company: "Hýsa Sp/f", address: "Heygsvegur 33, Tórshavn, Faroe Islands", companyId: "",
     invoiceEmail: "hysa@hysa.fo", notifyEmail: "hysa@hysa.fo", invoicePrefix: "HYSA-AFF",
     bankName: "Betri Banki", bankReg: "9181", bankAccount: "5763233", iban: "FO6691810006131923", bic: "EIKBFOTF",
-    vatRate: 25, paymentDays: 8, invoiceDay: 1, autoInvoice: true, defaultRate: 10, cookieDays: 30, voucherDays: 7, voucherUses: 0,
+    vatRate: 25, paymentDays: 8, invoiceDay: 1, autoInvoice: true, defaultRate: 10, cookieDays: 30, voucherDays: 7, voucherUses: 0, followUpHours: 24,
     updatedAt: "1970-01-01T00:00:00.000Z",
   };
 }

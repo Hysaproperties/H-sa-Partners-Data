@@ -2,7 +2,7 @@
 // 1. fetch new orders from connected Shopify / WooCommerce shops that came through a Hýsa link or code
 // 2. monthly invoices for the previous month
 // 3. emails from hysa@hysa.fo: new sign-ups (to Hýsa), welcome (to approved partners), sale notifications, PDF invoices
-import { commission, agrLabel, uid, nowISO, normRef, saleEmail, invoiceEmail, welcomeEmail, fmtMoney, createInvoice, billable, defaultSettings, SYSTEMS } from "../public/assets/lib.js";
+import { commission, agrLabel, uid, randKey, nowISO, normRef, saleEmail, invoiceEmail, welcomeEmail, fmtMoney, createInvoice, billable, defaultSettings, SYSTEMS } from "../public/assets/lib.js";
 
 const BASE = (process.env.WORKER_URL || "").replace(/\/$/, "");
 const KEY = process.env.JOB_KEY;
@@ -189,6 +189,21 @@ if (process.env.SMTP_HOST) {
       catch (e) { say(`Welcome email to ${p.name} failed: ${e.message}`); }
     }
   }
+  // Follow-up to the guest: did you use the voucher? (only when the partner has not registered it)
+  for (const v of data.vouchers) {
+    if (v.deleted || !v.guestEmail || !v.emailedAt || v.followUpSentAt || v.guestAnswer || (v.uses || []).length) continue;
+    if (Date.now() - new Date(v.createdAt) < (+st.followUpHours || 24) * 36e5) continue;
+    if (!v.confirmKey) v.confirmKey = randKey(24);
+    const p = data.partners.find((x) => x.id === v.partnerId);
+    try {
+      await send({ to: v.guestEmail, subject: `Did you visit ${p?.name || "us"}? One quick question`, text: [
+        `Hi ${v.guestName.split(" ")[0] || "there"},`, "",
+        `You got a Hýsa guest voucher (${v.id}) for ${p?.name || "a local business"}. Did you use it?`, "",
+        `Please tap here to answer, it takes 20 seconds:`, `${data.origin}/confirm.html#${v.confirmKey}`, "",
+        "Thank you for helping us support local businesses.", "", st.company].join("\n") });
+      v.followUpSentAt = nowISO(); touch(v); say(`Follow-up sent to ${v.guestEmail} (${v.id})`);
+    } catch (e) { say(`Follow-up failed: ${e.message}`); }
+  }
   for (const v of data.vouchers) {
     if (v.emailedAt || v.deleted || !v.guestEmail || (v.expiresAt || "") < nowISO()) continue;
     const p = data.partners.find((x) => x.id === v.partnerId);
@@ -209,10 +224,10 @@ if (process.env.SMTP_HOST) {
     try { await send({ to: m.to, bcc: admin, subject: m.subject, text: m.body }); s.notifiedAt = nowISO(); touch(s); say(`Sale email to ${p.name}: ${fmtMoney(s.amount, s.currency)}`); }
     catch (e) { say(`Sale email to ${p.name} failed: ${e.message}`); }
   }
-  const newReceipts = data.sales.filter((s) => s.review === "pending" && !s.adminNotifiedAt && !s.deleted);
+  const newReceipts = data.sales.filter((s) => (s.review === "pending" || s.flagged) && !s.adminNotifiedAt && !s.deleted);
   if (newReceipts.length) {
     try {
-      await send({ to: admin, subject: `${newReceipts.length} guest receipt(s) to check`, text: newReceipts.map((s) => `${s.date} ${data.partners.find((p) => p.id === s.partnerId)?.name}: ${fmtMoney(s.amount, s.currency)} (${s.guestName})`).join("\n") + `\n\nCheck them in the admin: ${data.origin}/admin.html` });
+      await send({ to: admin, subject: `Hýsa: ${newReceipts.length} guest purchase(s) to check`, text: newReceipts.map((s) => `${s.date} ${data.partners.find((p) => p.id === s.partnerId)?.name}: ${fmtMoney(s.amount, s.currency)} (${s.guestName})`).join("\n") + `\n\nCheck them in the admin: ${data.origin}/admin.html` });
       newReceipts.forEach((s) => { s.adminNotifiedAt = nowISO(); touch(s); });
     } catch (e) { say(`Receipt notice failed: ${e.message}`); }
   }

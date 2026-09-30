@@ -85,7 +85,7 @@ function renderLogin(){
 }
 
 /* ---------- shell ---------- */
-const TABS=[["overview","Overview"],["partners","Partners"],["sales","Sales"],["invoicing","Invoices"],["settings","Settings"]];
+const TABS=[["overview","Overview"],["partners","Partners"],["sales","Sales"],["vouchers","Vouchers"],["invoicing","Invoices"],["settings","Settings"]];
 function renderShell(){
   $("#app").innerHTML=`<header class="top no-print"><div class="top-in">
     <div class="brand"><h1>Hýsa <span>Partner Referrals</span></h1><div class="row"><span id="saveState">${savingHTML()}</span><a class="btn sm" href="/" target="_blank" rel="noopener">Guest guide</a><button class="btn sm" data-act="reload">Reload</button><button class="btn sm" data-act="logout">Log out</button></div></div>
@@ -94,10 +94,10 @@ function renderShell(){
 }
 function render(){
   const m=$("#main");if(!m)return;
-  const pend=P().filter(p=>p.status==="pending").length,rev=SA().filter(s=>s.review==="pending").length;
-  $("#tabs").innerHTML=TABS.map(([k,v])=>`<button data-tab="${k}" aria-selected="${S.tab===k}">${v}${k==="partners"&&pend?`<span class="badge">${pend}</span>`:""}${k==="sales"&&rev?`<span class="badge">${rev}</span>`:""}</button>`).join("");
+  const pend=P().filter(p=>p.status==="pending").length,rev=SA().filter(s=>s.review==="pending").length,flag=SA().filter(s=>s.flagged==="not_registered").length;
+  $("#tabs").innerHTML=TABS.map(([k,v])=>`<button data-tab="${k}" aria-selected="${S.tab===k}">${v}${k==="partners"&&pend?`<span class="badge">${pend}</span>`:""}${k==="sales"&&rev?`<span class="badge">${rev}</span>`:""}${k==="vouchers"&&flag?`<span class="badge" style="background:var(--bad)">${flag}</span>`:""}</button>`).join("");
   const f=document.activeElement?.id,pos=f&&document.activeElement.selectionStart;
-  m.innerHTML=({overview:vOverview,partners:vPartners,sales:vSales,invoicing:vInvoicing,settings:vSettings}[S.tab])();
+  m.innerHTML=({overview:vOverview,partners:vPartners,sales:vSales,vouchers:vVouchers,invoicing:vInvoicing,settings:vSettings}[S.tab]||vOverview)();
   if(f){const el=document.getElementById(f);if(el&&m.contains(el)){el.focus();try{el.setSelectionRange(pos,pos)}catch(e){}}}
 }
 const statusChip=s=>s.review==="pending"?'<span class="chip warn">Needs approval</span>':s.review==="rejected"?'<span class="chip bad">Rejected</span>':s.status==="paid"?'<span class="chip ok">Paid</span>':s.status==="invoiced"?'<span class="chip info">Invoiced</span>':'<span class="chip">Next invoice</span>';
@@ -115,6 +115,7 @@ function vOverview(){
   const rows=partners.filter(p=>p.status==="approved").map(p=>({p,...(byP[p.id]||{c:0,n:0}),k:clicks(p.id)})).sort((a,b)=>b.c-a.c);const max=Math.max(1,...rows.map(r=>r.c));
   const sync=S.data.sync||{};const totalClicks=Object.values(S.data.clickStats||{}).reduce((a,c)=>a+c.last30,0);
   return `
+  ${SA().some(s=>s.flagged==="not_registered")?`<div class="notice bad row spread"><span>${SA().filter(s=>s.flagged==="not_registered").length} purchase(s) confirmed by guests were not registered by the partner. They are included on the invoice.</span><button class="btn sm" data-tab="vouchers">See vouchers</button></div>`:""}
   ${pend.length||rev.length?`<div class="notice warn row spread"><span>${pend.length?`${pend.length} new partner sign-up${pend.length>1?"s":""} to approve. `:""}${rev.length?`${rev.length} guest receipt${rev.length>1?"s":""} to check.`:""}</span><span class="row">${pend.length?'<button class="btn sm" data-tab="partners">Review partners</button>':""}${rev.length?'<button class="btn sm" data-go-review>Check receipts</button>':""}</span></div>`:""}
   <div class="kpis">
     <div class="kpi money"><span class="eyebrow">Commission earned</span><span class="v">${fmt(t.earned)}</span><span class="d">excl. VAT, from ${fmt(t.rev)} in sales</span></div>
@@ -154,7 +155,7 @@ function vPartners(){
 
 function salesTable(list){
   return `<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Partner</th><th>How</th><th>Guest</th><th class="num">Purchase</th><th class="num">Commission</th><th>Status</th></tr></thead><tbody>
-  ${list.map(s=>{const p=byId(S.data.partners,s.partnerId);return `<tr class="click" data-open-sale="${s.id}"><td class="mono" style="white-space:nowrap">${fdate(s.date)}</td><td><b>${esc(p?.name||"—")}</b><div class="sm">${esc(s.orderRef?"No. "+s.orderRef:"")}</div></td><td>${howChip(s)}${s.guestReceiptId&&s.source!=="guest"?' <span class="chip ok">Receipt</span>':""}</td><td>${esc(s.guestName||"—")}</td><td class="num">${fmt(s.amount,s.currency)}</td><td class="num"><b style="color:var(--money)">${fmt(s.commission,s.currency)}</b></td><td>${statusChip(s)}</td></tr>`}).join("")}
+  ${list.map(s=>{const p=byId(S.data.partners,s.partnerId);return `<tr class="click" data-open-sale="${s.id}"><td class="mono" style="white-space:nowrap">${fdate(s.date)}</td><td><b>${esc(p?.name||"—")}</b><div class="sm">${esc(s.orderRef?"No. "+s.orderRef:"")}</div></td><td>${howChip(s)}${s.guestReceiptId&&s.source!=="guest"?' <span class="chip ok">Receipt</span>':""}${s.flagged==="not_registered"?' <span class="chip bad">Not registered by partner</span>':""}</td><td>${esc(s.guestName||"—")}</td><td class="num">${fmt(s.amount,s.currency)}</td><td class="num"><b style="color:var(--money)">${fmt(s.commission,s.currency)}</b></td><td>${statusChip(s)}</td></tr>`}).join("")}
   </tbody></table></div>`;
 }
 function vSales(){
@@ -173,6 +174,25 @@ function vSales(){
   <section class="panel">${list.length?salesTable(list):emptyState("No sales here","Try another filter.")}</section>`;
 }
 
+function vStatus(v){const u=(v.uses||[]).length,a=v.guestAnswer;
+  if(u)return {k:"reg",chip:`<span class="chip ok">Registered${u>1?` ×${u}`:""}</span>`};
+  if(a&&a.visited)return {k:"flag",chip:'<span class="chip bad">Guest confirmed · not registered</span>'};
+  if(a&&a.visited===false)return {k:"no",chip:'<span class="chip">Guest did not go</span>'};
+  if(v.followUpSentAt)return {k:"ask",chip:'<span class="chip warn">Waiting for guest answer</span>'};
+  if((v.expiresAt||"")<L.nowISO())return {k:"exp",chip:'<span class="chip">Expired, no answer</span>'};
+  return {k:"open",chip:'<span class="chip info">Not used yet</span>'}}
+function vVouchers(){
+  const vs=(S.data.vouchers||[]).filter(v=>!v.deleted).sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
+  const by={};for(const v of vs){const s=vStatus(v).k;const r=by[v.partnerId]=by[v.partnerId]||{n:0,reg:0,flag:0,no:0,wait:0};r.n++;if(s==="reg")r.reg++;else if(s==="flag")r.flag++;else if(s==="no")r.no++;else r.wait++}
+  const rows=Object.entries(by).map(([id,r])=>({p:byId(S.data.partners,id),...r})).sort((a,b)=>b.flag-a.flag||b.n-a.n);
+  return `<div><h2>Vouchers</h2><div class="muted" style="font-size:.9rem">Every voucher a guest has picked up for an in-person visit. The day after, guests whose voucher was not registered get an email asking if they used it. A purchase the guest confirms but the partner did not register is created automatically and marked red.</div></div>
+  <section class="panel"><div class="panel-h"><h3>Control per partner</h3></div>
+  ${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Partner</th><th class="num">Picked up</th><th class="num">Registered by partner</th><th class="num">Guest confirmed, not registered</th><th class="num">Guest did not go</th><th class="num">No answer yet</th></tr></thead><tbody>
+  ${rows.map(r=>`<tr><td><b>${esc(r.p?.name||"—")}</b></td><td class="num">${r.n}</td><td class="num">${r.reg}</td><td class="num">${r.flag?`<span class="chip bad">${r.flag}</span>`:"0"}</td><td class="num">${r.no}</td><td class="num">${r.wait}</td></tr>`).join("")}</tbody></table></div>`:emptyState("No vouchers yet","They appear here when guests pick up an offer in the guide.")}</section>
+  <section class="panel"><div class="panel-h"><h3>All vouchers</h3></div>
+  ${vs.length?`<div class="tbl-wrap"><table><thead><tr><th>Picked up</th><th>Code</th><th>Partner</th><th>Guest</th><th>Status</th><th class="num">Amount</th></tr></thead><tbody>
+  ${vs.map(v=>{const st=vStatus(v),amt=(v.uses||[]).reduce((a,u)=>a+(+u.amount||0),0)||v.guestAnswer?.amount||0;return `<tr${v.guestSaleId||(v.uses||[])[0]?` class="click" data-open-sale="${esc(v.guestSaleId||(v.uses||[])[0].saleId)}"`:""}><td class="mono" style="white-space:nowrap">${fdate(v.createdAt)}</td><td class="mono">${esc(v.id)}</td><td>${esc(byId(S.data.partners,v.partnerId)?.name||"—")}</td><td>${esc(v.guestName)}<div class="sm">${esc(v.guestEmail)}</div></td><td>${st.chip}</td><td class="num">${amt?fmt(amt):"—"}</td></tr>`}).join("")}</tbody></table></div>`:emptyState("No vouchers yet","")}</section>`;
+}
 function openForInv(){const I=S.inv;return SA().filter(s=>L.billable(s)&&s.partnerId===I.partner&&(!s.status||s.status==="open")&&(!I.from||s.date>=I.from)&&(!I.to||s.date<=I.to))}
 function vInvoicing(){
   const st=S.data.settings,I=S.inv,p=byId(S.data.partners,I.partner),open=openForInv(),sum=open.reduce((a,s)=>a+(+s.commission||0),0);
@@ -414,6 +434,8 @@ document.addEventListener("submit",e=>{
 });
 
 load().catch(()=>{});
+setInterval(async()=>{if(!S.data||$("#drawerRoot").innerHTML||S.saving?.msg==="Saving…"||document.hidden)return;
+  try{const d=await api("/api/admin/data");const a=document.activeElement;if(a&&/INPUT|SELECT|TEXTAREA/.test(a.tagName))return;S.data=d;snapshot();render()}catch(e){}},60000);
 </script>
 </body>
 </html>

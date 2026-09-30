@@ -181,10 +181,50 @@ async function api(req, env, url, path, method) {
     const existing = (await all(env, "voucher")).find((v) => v.partnerId === p.id && v.guestEmail === email && voucherState(v, s).ok);
     const v = existing || {
       id: await voucherCode(env), partnerId: p.id, guestName: name, guestEmail: email, guestPhone: clean(b.guestPhone, 40), stay: clean(b.stay, 120),
-      offer: p.discountText || "", expiresAt: new Date(Date.now() + (+s.voucherDays || 7) * 864e5).toISOString(), uses: [], createdAt: nowISO(), updatedAt: nowISO(),
+      offer: p.discountText || "", expiresAt: new Date(Date.now() + (+s.voucherDays || 7) * 864e5).toISOString(), uses: [], confirmKey: randKey(24), createdAt: nowISO(), updatedAt: nowISO(),
     };
     if (!existing) await put(env, "voucher", v);
     return json({ ok: true, code: v.id, partner: p.name, offer: v.offer, expiresAt: v.expiresAt, guestName: v.guestName, address: p.address || "" });
+  }
+
+  // Guest follow-up: "Did you use your voucher?"
+  const cm = path.match(/^\/api\/confirm\/([A-Za-z0-9]{20,40})$/);
+  if (cm) {
+    const v = (await all(env, "voucher")).find((x) => x.confirmKey === cm[1] && !x.deleted);
+    if (!v) return bad("This link is not valid.", 404);
+    const p = await one(env, "partner", v.partnerId);
+    if (method === "GET") return json({ partner: p?.name || "", offer: v.offer, guestName: v.guestName, code: v.id, createdAt: v.createdAt, answered: v.guestAnswer || null, registered: (v.uses || []).length > 0 });
+    if (method === "POST") {
+      const b = await body(req);
+      const ts = nowISO();
+      if (b.visited === false) {
+        v.guestAnswer = { visited: false, at: ts }; v.updatedAt = ts;
+        await put(env, "voucher", v);
+        return json({ ok: true });
+      }
+      const amount = +b.amount;
+      if (!(amount > 0)) return bad("Please enter the amount you paid.");
+      let fileId = null;
+      const img = String(b.image || "");
+      if (img) {
+        if (!/^data:image\/(jpeg|png|webp);base64,/.test(img) || img.length > 1_400_000) return bad("The photo could not be used. Please try another one.");
+        fileId = uid("f_");
+        await env.DB.prepare("INSERT INTO files (id, mime, data, created_at) VALUES (?, ?, ?, ?)").bind(fileId, img.slice(5, img.indexOf(";")), img, ts).run();
+      }
+      v.guestAnswer = { visited: true, amount, date: clean(b.date, 10) || today(), fileId, at: ts };
+      const stmts = [];
+      if (!(v.uses || []).length && p) {
+        // The partner did not register it: create the sale from the guest's confirmation and flag it
+        const sale = newSale(p, { date: v.guestAnswer.date, amount, guestName: v.guestName, guestEmail: v.guestEmail, guestPhone: v.guestPhone, notes: "Confirmed by the guest. The partner did not register this voucher." }, "guest",
+          { voucherId: v.id, guestReceiptId: fileId, guestConfirmed: true, flagged: "not_registered", review: "approved" });
+        v.guestSaleId = sale.id;
+        stmts.push(putStmt(env, "sale", sale));
+      }
+      v.updatedAt = ts;
+      stmts.push(putStmt(env, "voucher", v));
+      await env.DB.batch(stmts);
+      return json({ ok: true });
+    }
   }
 
   // Partner signs up
@@ -275,6 +315,12 @@ async function api(req, env, url, path, method) {
       if (!st.ok) return bad(st.reason);
       if (!(+b.amount > 0)) return bad("Please enter the amount the guest pays.");
       const sale = newSale(p, { date: today(), amount: +b.amount, persons: b.persons, orderRef: b.orderRef, guestName: v.guestName, guestEmail: v.guestEmail, guestPhone: v.guestPhone }, "voucher", { voucherId: v.id, partnerReported: true, notifiedAt: nowISO() });
+      // Guest already confirmed it and a flagged sale exists: replace that one instead of counting twice
+      if (v.guestSaleId) {
+        const prev = await one(env, "sale", v.guestSaleId);
+        if (prev && !prev.deleted && (!prev.status || prev.status === "open")) { sale.id = prev.id; sale.createdAt = prev.createdAt; sale.guestReceiptId = prev.guestReceiptId; sale.guestConfirmed = true; }
+        v.guestSaleId = null;
+      }
       v.uses = [...(v.uses || []), { saleId: sale.id, at: nowISO(), amount: sale.amount }]; v.updatedAt = nowISO();
       await env.DB.batch([putStmt(env, "sale", sale), putStmt(env, "voucher", v)]);
       return json({ ok: true, guestName: v.guestName, commission: sale.commission });
