@@ -45,6 +45,7 @@ function render(){
   ${p.status==="approved"?`<section class="panel" style="border:2px solid var(--accent)"><div class="panel-h"><h3>Redeem a Hýsa guest voucher</h3><span class="sm">Before the guest pays</span></div><div class="panel-b">
     <form id="vCheck" class="row" style="align-items:flex-end"><label class="f" style="flex:1;min-width:180px">Voucher code<input id="vCode" class="mono" placeholder="HY-XXXXX" autocomplete="off" style="font-size:1.2rem;text-transform:uppercase"></label><button class="btn pri lg">Check</button></form>
     <div id="vResult" style="margin-top:14px"></div></div></section>`:""}
+  ${(D.todo||[]).length?`<div class="notice warn stack" style="gap:6px"><b>To do for your Hýsa partnership</b><ul style="margin:0;padding-left:18px">${D.todo.map(t=>`<li>${esc(t)}</li>`).join("")}</ul><span class="sm">Most of these you fix in “Your listing” or “Online bookings” below. Questions: hysa@hysa.fo</span></div>`:""}
   <div class="kpis">
     <div class="kpi"><span class="eyebrow">Guests sent to you</span><span class="v">${D.clicks.last30}</span><span class="d">clicks on your link, last 30 days (${D.clicks.total} in total)</span></div>
     <div class="kpi"><span class="eyebrow">Purchases by Hýsa guests</span><span class="v">${D.sales.length}</span><span class="d">${fmt(D.sales.reduce((a,s)=>a+(+s.amount||0),0))} in sales</span></div>

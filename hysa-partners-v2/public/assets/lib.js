@@ -147,3 +147,55 @@ export function welcomeEmail(partner, settings, baseUrl) {
     ].join("\n"),
   };
 }
+
+/* ---- partner health & change log ---- */
+export const CHANGE_FIELDS = { name: "Business name", category: "Category", website: "Website", phone: "Phone", publicEmail: "Email for guests", address: "Address", hours: "Opening hours", description: "Description", discountText: "Guest offer", discountCode: "Discount code", contactName: "Contact person", email: "Contact email", invoiceEmail: "Invoice email", companyId: "Company no." };
+export function diffChanges(before, after, by) {
+  const at = nowISO(), out = [];
+  for (const [k, label] of Object.entries(CHANGE_FIELDS)) {
+    const a = String(before?.[k] ?? "").trim(), b = String(after?.[k] ?? "").trim();
+    if (a !== b) out.push({ at, by, field: k, label, from: a, to: b });
+  }
+  return out;
+}
+export function logChanges(p, changes) {
+  if (changes && changes.length) p.changes = [...changes, ...(p.changes || [])].slice(0, 200);
+  return p;
+}
+const DAY = 864e5;
+export function partnerHealth(p, { sales = [], invoices = [] } = {}) {
+  const now = Date.now(), since = now - 90 * DAY, issues = [], notes = [];
+  const add = (lvl, text, who) => issues.push({ lvl, text, who });
+  const a = p.agreement || {}, i = p.integration || {}, d = today();
+  if (p.status === "rejected") add("red", "Rejected", "hysa");
+  else if (p.active === false) add("red", "Deactivated", "hysa");
+  else if (p.status === "approved" && a.validTo && d > a.validTo) add("red", `Agreement ended ${a.validTo}`, "hysa");
+  else if (p.status === "approved" && a.validFrom && d < a.validFrom) add("red", `Agreement starts ${a.validFrom}`, "hysa");
+  if (p.status === "pending") add("yellow", "Awaiting approval from Hýsa", "hysa");
+  if (p.status === "approved" && p.showOnGuide === false) add("yellow", "Hidden from the guest guide", "hysa");
+  const shop = i.type === "woocommerce" || i.type === "shopify";
+  if (shop) {
+    if (!(i.key || i.token)) add("yellow", `${SYSTEMS[i.type]} chosen, but the webshop is not connected`, "partner");
+    else if (i.lastError) add("yellow", `Webshop connection error: ${i.lastError}`, "partner");
+    else if (p.status === "approved" && i.lastSync && now - Date.parse(i.lastSync) > 3 * DAY) add("yellow", "Webshop orders not checked for 3+ days", "hysa");
+    if (!p.scriptSeenAt) notes.push("Recommended tracking line not seen on the website yet");
+  }
+  if (i.type === "script" && !p.scriptSeenAt && !p.lastConversionAt) add("yellow", "Tracking code not found on the website", "partner");
+  const miss = [["website", "website"], ["phone", "phone"], ["address", "address"], ["hours", "opening hours"], ["description", "description"]].filter(([k]) => !String(p[k] || "").trim()).map((x) => x[1]);
+  if (miss.length) add("yellow", `Listing is missing: ${miss.join(", ")}`, "partner");
+  const off = String(p.discountText || "").trim();
+  if (!off) add("yellow", "No offer for Hýsa guests", "partner");
+  else if (off.length < 5 || /^[0-9\s%.,+-]+$/.test(off)) add("yellow", `Guest offer is unclear: “${off}”`, "partner");
+  if (!p.email) add("yellow", "No contact email", "partner");
+  const flagged = sales.filter((s) => s.partnerId === p.id && !s.deleted && s.flagged === "not_registered" && Date.parse(s.createdAt || s.date) > since).length;
+  if (flagged) add("yellow", `${flagged} voucher purchase${flagged > 1 ? "s" : ""} confirmed by guests but not registered (90 days)`, "partner");
+  const overdue = invoices.filter((v) => v.partnerId === p.id && !v.deleted && v.status !== "paid" && v.dueDate && v.dueDate < d);
+  if (overdue.length) add("yellow", `${overdue.length} invoice${overdue.length > 1 ? "s" : ""} overdue`, "partner");
+  const mine = sales.filter((s) => s.partnerId === p.id && !s.deleted && s.review !== "rejected").map((s) => s.date || "").sort();
+  if (p.status === "approved") notes.push(mine.length ? `Last Hýsa purchase: ${mine[mine.length - 1]}` : "No Hýsa purchases yet");
+  const changes = (p.changes || []).filter((c) => Date.parse(c.at) > since);
+  const partnerChanges = changes.filter((c) => c.by === "partner");
+  const level = issues.some((x) => x.lvl === "red") ? "red" : issues.length ? "yellow" : partnerChanges.length ? "blue" : "green";
+  return { level, issues, notes, changes, partnerChanges };
+}
+export const HEALTH = { green: "All good", yellow: "Needs action", red: "Not active", blue: "Changed recently" };

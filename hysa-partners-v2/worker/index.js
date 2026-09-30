@@ -1,6 +1,6 @@
 // Hýsa Partner Referrals — Cloudflare worker.
 // Pages in /public are static assets; this worker handles /go links, tracking, forms and the admin/job API.
-import { uid, randKey, nowISO, today, commission, agrLabel, defaultSettings, slugify, withParams, publicPartner, agreementActive, CATEGORIES, SYSTEMS } from "../public/assets/lib.js";
+import { uid, randKey, nowISO, today, commission, agrLabel, defaultSettings, slugify, withParams, publicPartner, agreementActive, CATEGORIES, SYSTEMS, diffChanges, logChanges, partnerHealth } from "../public/assets/lib.js";
 
 const JSONH = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
 const json = (o, status = 200, extra = {}) => new Response(JSON.stringify(o), { status, headers: { ...JSONH, ...extra } });
@@ -68,6 +68,7 @@ function trackingScript(origin, days) {
 (function(){
   var API=${JSON.stringify(origin + "/api/conversion")},K="hysa_click",D=${+days || 30};
   var s=document.currentScript,P=s&&s.getAttribute("data-partner");
+  try{if(P){var SK="hysa_seen",st=+localStorage.getItem(SK)||0;if(Date.now()-st>864e5){localStorage.setItem(SK,String(Date.now()));new Image().src=${JSON.stringify(origin + "/api/seen?k=")}+encodeURIComponent(P)}}}catch(e){}
   function save(v){try{localStorage.setItem(K,JSON.stringify({id:v,t:Date.now()}))}catch(e){}document.cookie=K+"="+encodeURIComponent(v)+";max-age="+(D*86400)+";path=/;SameSite=Lax"}
   function get(){try{var o=JSON.parse(localStorage.getItem(K)||"null");if(o&&Date.now()-o.t<D*864e5)return o.id}catch(e){}var m=document.cookie.match(/(?:^|; )hysa_click=([^;]+)/);return m?decodeURIComponent(m[1]):null}
   var m=location.search.match(/[?&]hysa_click=([^&#]+)/);if(m)save(decodeURIComponent(m[1]));
@@ -130,6 +131,12 @@ export default {
 
       if (path.startsWith("/api/")) {
         if (method === "OPTIONS") return new Response(null, { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, GET", "Access-Control-Allow-Headers": "Content-Type" } });
+        if (path === "/api/seen" && method === "GET") {
+          const k = (url.searchParams.get("k") || "").slice(0, 40);
+          const p = k && (await partnerBy(env, "trackKey", k));
+          if (p && (!p.scriptSeenAt || Date.now() - Date.parse(p.scriptSeenAt) > 12 * 36e5)) { p.scriptSeenAt = nowISO(); p.updatedAt = nowISO(); await put(env, "partner", p); }
+          return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" } });
+        }
         return await api(req, env, url, path, method);
       }
       return env.ASSETS.fetch(req);
@@ -291,6 +298,7 @@ async function api(req, env, url, path, method) {
       return json({
         company: s.company, origin: url.origin, cookieDays: s.cookieDays, paymentDays: s.paymentDays, vatRate: s.vatRate,
         partner: { ...publicPartner(p), status: p.status, contactName: p.contactName, contactEmail: p.email, invoiceEmail: p.invoiceEmail, companyId: p.companyId, agreement: p.agreement, agreementLabel: agrLabel(p), trackKey: p.trackKey, integration: { ...integ, connected: !!(token || key) } },
+        todo: partnerHealth(p, { sales, invoices }).issues.filter((x) => x.who === "partner").map((x) => x.text),
         clicks: { total: clicks?.n || 0, last30: clicks?.m || 0 },
         sales: sales.filter((x) => x.partnerId === p.id && !x.deleted && x.review !== "rejected").map(({ guestEmail, guestPhone, ...x }) => x).sort((a, b) => (b.date || "").localeCompare(a.date || "")),
         invoices: invoices.filter((x) => x.partnerId === p.id && !x.deleted).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")),
@@ -342,12 +350,18 @@ async function api(req, env, url, path, method) {
     }
     if (action === "/update" && method === "POST") {
       const b = await body(req);
+      const before = { ...p }, oldI = { ...(p.integration || {}) };
       for (const k of ["phone", "publicEmail", "address", "hours", "description", "website", "contactName", "invoiceEmail", "discountCode", "discountText"]) if (k in b) p[k] = clean(b[k], k === "description" ? 600 : 300);
       if (b.integration) {
         const i = b.integration, cur = p.integration || {};
         p.integration = { ...cur, type: SYSTEMS[i.type] ? i.type : cur.type, shop: clean(i.shop ?? cur.shop, 200), url: clean(i.url ?? cur.url, 300),
           token: i.token ? clean(i.token, 200) : cur.token, key: i.key ? clean(i.key, 200) : cur.key, secret: i.secret ? clean(i.secret, 200) : cur.secret, lastError: "" };
       }
+      const ch = diffChanges(before, p, "partner");
+      const ni = p.integration || {};
+      if (b.integration && (ni.type !== oldI.type || ni.url !== oldI.url || ni.shop !== oldI.shop || ni.key !== oldI.key || ni.token !== oldI.token || ni.secret !== oldI.secret))
+        ch.push({ at: nowISO(), by: "partner", field: "integration", label: "Online bookings", from: SYSTEMS[oldI.type] || "", to: (SYSTEMS[ni.type] || "") + (ni.key !== oldI.key || ni.token !== oldI.token || ni.secret !== oldI.secret ? " (new access key)" : "") });
+      logChanges(p, ch);
       p.updatedAt = nowISO();
       await put(env, "partner", p);
       return json({ ok: true });

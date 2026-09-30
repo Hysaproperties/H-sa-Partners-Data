@@ -58,13 +58,13 @@ const touch=o=>{o.updatedAt=L.nowISO();return o};
 
 /* ---------- api ---------- */
 async function api(path,opt={}){const r=await fetch(API+path,{credentials:"include",headers:{"Content-Type":"application/json"},...opt});const j=await r.json().catch(()=>({}));if(r.status===401){renderLogin();throw new Error("Please log in")}if(!r.ok)throw new Error(j.error||"Request failed");return j}
-function snapshot(){S.snap.clear();for(const [k,arr] of [["partner",S.data.partners],["sale",S.data.sales],["invoice",S.data.invoices]])for(const d of arr||[])S.snap.set(k+":"+d.id,JSON.stringify(d));S.snap.set("settings:main",JSON.stringify(S.data.settings))}
+function snapshot(){S.snap.clear();for(const [k,arr] of [["partner",S.data.partners],["sale",S.data.sales],["invoice",S.data.invoices],["voucher",S.data.vouchers||[]]])for(const d of arr||[])S.snap.set(k+":"+d.id,JSON.stringify(d));S.snap.set("settings:main",JSON.stringify(S.data.settings))}
 async function load(){S.data=await api("/api/admin/data");snapshot();renderShell()}
 let saveTimer,saveQ=Promise.resolve();
 function commit(){render();clearTimeout(saveTimer);saveTimer=setTimeout(()=>{saveQ=saveQ.then(doSave)},300)}
 async function doSave(){
   const docs=[];
-  for(const [k,arr] of [["partner",S.data.partners],["sale",S.data.sales],["invoice",S.data.invoices]])for(const d of arr){const j=JSON.stringify(d);if(S.snap.get(k+":"+d.id)!==j)docs.push({kind:k,doc:d})}
+  for(const [k,arr] of [["partner",S.data.partners],["sale",S.data.sales],["invoice",S.data.invoices],["voucher",S.data.vouchers||[]]])for(const d of arr){const j=JSON.stringify(d);if(S.snap.get(k+":"+d.id)!==j)docs.push({kind:k,doc:d})}
   const sj=JSON.stringify(S.data.settings);if(S.snap.get("settings:main")!==sj)docs.push({kind:"settings",doc:S.data.settings});
   if(!docs.length)return;
   setSaving("Saving…");
@@ -106,6 +106,10 @@ const pStatus=p=>p.status==="pending"?'<span class="chip warn">Awaiting approval
 const trackChip=p=>{const i=p.integration||{};if(i.type==="shopify"||i.type==="woocommerce")return i.lastError?'<span class="chip bad">Error</span>':(i.token||i.key)?`<span class="chip acc">${L.SYSTEMS[i.type]}</span>`:'<span class="chip warn">Not connected</span>';if(i.type==="script")return p.lastConversionAt?'<span class="chip acc">Tracking code</span>':'<span class="chip warn">Code not seen yet</span>';return '<span class="chip">In person</span>'};
 function totals(list){let earned=0,open=0,inv=0,rev=0;for(const s of list){if(!L.billable(s))continue;const c=+s.commission||0;earned+=c;rev+=+s.amount||0;if(s.status==="invoiced")inv+=c;else if(s.status!=="paid")open+=c}return{earned,open,inv,rev}}
 const clicks=id=>S.data.clickStats?.[id]||{total:0,last30:0};
+const HL=p=>L.partnerHealth(p,{sales:S.data.sales||[],invoices:S.data.invoices||[]});
+const HCLS={green:"ok",yellow:"warn",red:"bad",blue:"info"};
+const hChip=h=>`<span class="chip ${HCLS[h.level]}">● ${L.HEALTH[h.level]}${h.level==="yellow"?` · ${h.issues.length}`:""}</span>${h.level!=="blue"&&h.partnerChanges.length?` <span class="chip info">Changed · ${h.partnerChanges.length}</span>`:""}`;
+const hMatch=(h,f)=>f==="all"||(f==="blue"?h.partnerChanges.length>0:h.level===f);
 function emptyState(t,b,act,btn){return `<div class="empty"><b style="color:var(--fg)">${esc(t)}</b><span>${esc(b)}</span>${act?`<button class="btn sm" data-act="${act}">${esc(btn)}</button>`:""}</div>`}
 
 function vOverview(){
@@ -117,6 +121,7 @@ function vOverview(){
   return `
   ${SA().some(s=>s.flagged==="not_registered")?`<div class="notice bad row spread"><span>${SA().filter(s=>s.flagged==="not_registered").length} purchase(s) confirmed by guests were not registered by the partner. They are included on the invoice.</span><button class="btn sm" data-tab="vouchers">See vouchers</button></div>`:""}
   ${pend.length||rev.length?`<div class="notice warn row spread"><span>${pend.length?`${pend.length} new partner sign-up${pend.length>1?"s":""} to approve. `:""}${rev.length?`${rev.length} guest receipt${rev.length>1?"s":""} to check.`:""}</span><span class="row">${pend.length?'<button class="btn sm" data-tab="partners">Review partners</button>':""}${rev.length?'<button class="btn sm" data-go-review>Check receipts</button>':""}</span></div>`:""}
+  ${(()=>{const hh=P().filter(p=>p.status==="approved").map(HL);const y=hh.filter(h=>h.level==="yellow").length,bl=hh.filter(h=>h.partnerChanges.length).length;return y||bl?`<div class="notice info row spread"><span>${y?`${y} partner${y>1?"s":""} need${y>1?"":"s"} action. `:""}${bl?`${bl} partner${bl>1?"s":""} changed details in the last 90 days.`:""}</span><span class="row">${y?'<button class="btn sm" data-pf-go="yellow">See who</button>':""}${bl?'<button class="btn sm" data-pf-go="blue">See changes</button>':""}</span></div>`:""})()}
   <div class="kpis">
     <div class="kpi money"><span class="eyebrow">Commission earned</span><span class="v">${fmt(t.earned)}</span><span class="d">excl. VAT, from ${fmt(t.rev)} in sales</span></div>
     <div class="kpi"><span class="eyebrow">For next invoice</span><span class="v">${fmt(t.open)}</span><span class="d">invoiced automatically on day ${+S.data.settings.invoiceDay||1}</span></div>
@@ -144,12 +149,16 @@ function vOverview(){
 
 function vPartners(){
   const q=S.q.partners.toLowerCase();
-  const list=P().filter(p=>!q||[p.name,p.category,p.contactName,p.email].join(" ").toLowerCase().includes(q)).sort((a,b)=>(a.status==="pending"?0:1)-(b.status==="pending"?0:1)||a.name.localeCompare(b.name));
+  const pf=S.pf||"all",hs=new Map(P().map(p=>[p.id,HL(p)]));
+  const cnt=f=>P().filter(p=>hMatch(hs.get(p.id),f)).length;
+  const ord={red:0,yellow:1,blue:2,green:3};
+  const list=P().filter(p=>!q||[p.name,p.category,p.contactName,p.email].join(" ").toLowerCase().includes(q)).filter(p=>hMatch(hs.get(p.id),pf)).sort((a,b)=>ord[hs.get(a.id).level]-ord[hs.get(b.id).level]||a.name.localeCompare(b.name));
   const earned={};for(const s of SA().filter(L.billable))earned[s.partnerId]=(earned[s.partnerId]||0)+(+s.commission||0);
   return `<div class="row spread"><div><h2>Partners</h2><div class="muted" style="font-size:.9rem">Businesses sign up themselves on the partner page. Approve them here and set the commission.</div></div>
   <div class="row"><input class="search" id="qPartners" placeholder="Search partners" value="${esc(S.q.partners)}"><button class="btn" data-copy="${esc(S.data.origin+"/join.html")}">Copy sign-up link</button><button class="btn pri" data-act="new-partner">Add partner</button></div></div>
-  <section class="panel">${list.length?`<div class="tbl-wrap"><table><thead><tr><th>Partner</th><th>Category</th><th>Commission</th><th>Tracking</th><th class="num">Clicks 30d</th><th class="num">Earned</th><th>Status</th></tr></thead><tbody>
-  ${list.map(p=>`<tr class="click" data-open-partner="${p.id}"><td><b>${esc(p.name)}</b><div class="sm">${esc(p.email||"")}</div></td><td>${esc(p.category)}</td><td><span class="chip money">${esc(L.agrLabel(p))}</span></td><td>${trackChip(p)}</td><td class="num">${clicks(p.id).last30}</td><td class="num">${fmt(earned[p.id]||0,p.currency)}</td><td>${pStatus(p)}</td></tr>`).join("")}
+  <div class="row" style="gap:8px;flex-wrap:wrap">${[["all","All","",""],["green","All good","ok","Approved and working"],["yellow","Needs action","warn","Something to fix or approve"],["red","Not active","bad","Rejected, deactivated or agreement ended"],["blue","Changed, 90 days","info","The partner changed details"]].map(([k,l,c,t])=>`<button class="btn sm${pf===k?" pri":""}" data-pf="${k}" title="${t}">${c?`<span class="chip ${c}" style="padding:0 6px;margin-right:4px">●</span>`:""}${l} · ${cnt(k)}</button>`).join("")}</div>
+  <section class="panel">${list.length?`<div class="tbl-wrap"><table><thead><tr><th>Partner</th><th>Health</th><th>Commission</th><th>Tracking</th><th class="num">Clicks 30d</th><th class="num">Earned</th><th>Status</th></tr></thead><tbody>
+  ${list.map(p=>{const h=hs.get(p.id);const why=h.issues[0]?.text||(h.partnerChanges[0]?`Changed ${esc(h.partnerChanges[0].label.toLowerCase())} ${fdate(h.partnerChanges[0].at)}`:h.notes.find(n=>n.startsWith("Last"))||"");return `<tr class="click" data-open-partner="${p.id}"><td><b>${esc(p.name)}</b><div class="sm">${esc(p.category)} · ${esc(p.email||"")}</div></td><td>${hChip(h)}<div class="sm" style="max-width:280px">${esc(why)}${h.issues.length>1?` (+${h.issues.length-1} more)`:""}</div></td><td><span class="chip money">${esc(L.agrLabel(p))}</span></td><td>${trackChip(p)}</td><td class="num">${clicks(p.id).last30}</td><td class="num">${fmt(earned[p.id]||0,p.currency)}</td><td>${pStatus(p)}</td></tr>`}).join("")}
   </tbody></table></div>`:emptyState(P().length?"No partners match":"No partners yet",P().length?"Try another search.":"Share the sign-up link with local businesses, or add one yourself.","new-partner","Add partner")}</section>`;
 }
 
@@ -190,8 +199,8 @@ function vVouchers(){
   ${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Partner</th><th class="num">Picked up</th><th class="num">Registered by partner</th><th class="num">Guest confirmed, not registered</th><th class="num">Guest did not go</th><th class="num">No answer yet</th></tr></thead><tbody>
   ${rows.map(r=>`<tr><td><b>${esc(r.p?.name||"—")}</b></td><td class="num">${r.n}</td><td class="num">${r.reg}</td><td class="num">${r.flag?`<span class="chip bad">${r.flag}</span>`:"0"}</td><td class="num">${r.no}</td><td class="num">${r.wait}</td></tr>`).join("")}</tbody></table></div>`:emptyState("No vouchers yet","They appear here when guests pick up an offer in the guide.")}</section>
   <section class="panel"><div class="panel-h"><h3>All vouchers</h3></div>
-  ${vs.length?`<div class="tbl-wrap"><table><thead><tr><th>Picked up</th><th>Code</th><th>Partner</th><th>Guest</th><th>Status</th><th class="num">Amount</th></tr></thead><tbody>
-  ${vs.map(v=>{const st=vStatus(v),amt=(v.uses||[]).reduce((a,u)=>a+(+u.amount||0),0)||v.guestAnswer?.amount||0;return `<tr${v.guestSaleId||(v.uses||[])[0]?` class="click" data-open-sale="${esc(v.guestSaleId||(v.uses||[])[0].saleId)}"`:""}><td class="mono" style="white-space:nowrap">${fdate(v.createdAt)}</td><td class="mono">${esc(v.id)}</td><td>${esc(byId(S.data.partners,v.partnerId)?.name||"—")}</td><td>${esc(v.guestName)}<div class="sm">${esc(v.guestEmail)}</div></td><td>${st.chip}</td><td class="num">${amt?fmt(amt):"—"}</td></tr>`}).join("")}</tbody></table></div>`:emptyState("No vouchers yet","")}</section>`;
+  ${vs.length?`<div class="tbl-wrap"><table><thead><tr><th>Picked up</th><th>Code</th><th>Partner</th><th>Guest</th><th>Status</th><th class="num">Amount</th><th></th></tr></thead><tbody>
+  ${vs.map(v=>{const st=vStatus(v),amt=(v.uses||[]).reduce((a,u)=>a+(+u.amount||0),0)||v.guestAnswer?.amount||0;return `<tr${v.guestSaleId||(v.uses||[])[0]?` class="click" data-open-sale="${esc(v.guestSaleId||(v.uses||[])[0].saleId)}"`:""}><td class="mono" style="white-space:nowrap">${fdate(v.createdAt)}</td><td class="mono">${esc(v.id)}</td><td>${esc(byId(S.data.partners,v.partnerId)?.name||"—")}</td><td>${esc(v.guestName)}<div class="sm">${esc(v.guestEmail)}</div></td><td>${st.chip}</td><td class="num">${amt?fmt(amt):"—"}</td><td style="text-align:right"><button class="btn sm danger" data-act="del-voucher" data-id="${esc(v.id)}">Delete</button></td></tr>`}).join("")}</tbody></table></div>`:emptyState("No vouchers yet","")}</section>`;
 }
 function openForInv(){const I=S.inv;return SA().filter(s=>L.billable(s)&&s.partnerId===I.partner&&(!s.status||s.status==="open")&&(!I.from||s.date>=I.from)&&(!I.to||s.date<=I.to))}
 function vInvoicing(){
@@ -291,6 +300,13 @@ function partnerDetail(id){
   openDrawer(p.name,`
   ${p.status==="pending"?`<div class="notice warn stack" style="gap:10px"><b>Signed up ${fdate(p.signupAt)}. Check the details and commission, then approve.</b><div class="row"><button class="btn pri" data-act="approve" data-id="${p.id}">Approve at ${esc(L.agrLabel(p))}</button><button class="btn" data-act="edit-partner" data-id="${p.id}">Change commission first</button><button class="btn danger" data-act="reject" data-id="${p.id}">Reject</button></div></div>`:""}
   <div class="row">${pStatus(p)}<span class="chip">${esc(p.category)}</span><span class="chip money">${esc(L.agrLabel(p))}</span>${trackChip(p)}</div>
+  ${(()=>{const h=HL(p);return `<section class="panel"><div class="panel-h"><h3>Health</h3>${hChip(h)}</div><div class="panel-b stack" style="gap:8px">
+    ${h.issues.length?h.issues.map(x=>`<div class="row" style="gap:8px;align-items:flex-start;flex-wrap:nowrap"><span class="chip ${x.lvl==="red"?"bad":"warn"}">${x.lvl==="red"?"Not active":"Action"}</span><span style="flex:1">${esc(x.text)}</span><span class="sm" style="white-space:nowrap">${x.who==="partner"?"Partner fixes":"Hýsa fixes"}</span></div>`).join(""):'<div>Everything is set up and working.</div>'}
+    ${h.notes.map(n=>`<div class="sm">${esc(n)}</div>`).join("")}
+  </div></section>
+  <section class="panel"><div class="panel-h"><h3>Changes, last 90 days</h3><span class="sm">${h.partnerChanges.length} by the partner · ${h.changes.length-h.partnerChanges.length} by Hýsa</span></div>
+    ${h.changes.length?`<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>By</th><th>What</th><th>Before</th><th>After</th></tr></thead><tbody>${h.changes.map(c=>`<tr><td class="mono" style="white-space:nowrap">${fdate(c.at)}</td><td>${c.by==="partner"?'<span class="chip info">Partner</span>':'<span class="chip">Hýsa</span>'}</td><td><b>${esc(c.label)}</b></td><td class="sm" style="max-width:200px;overflow-wrap:anywhere">${esc(String(c.from||"—").slice(0,120))}</td><td style="max-width:200px;overflow-wrap:anywhere">${esc(String(c.to||"—").slice(0,120))}</td></tr>`).join("")}</tbody></table></div>`:emptyState("No changes in the last 90 days","Changes the partner makes on their partner page, and edits made here, are listed here.")}
+  </section>`})()}
   <div class="kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))"><div class="kpi"><span class="eyebrow">Clicks 30d</span><span class="v" style="font-size:1.2rem">${k.last30}</span><span class="d">${k.total} in total</span></div><div class="kpi"><span class="eyebrow">Vouchers</span><span class="v" style="font-size:1.2rem">${(S.data.vouchers||[]).filter(v=>v.partnerId===id).length}</span><span class="d">${(S.data.vouchers||[]).filter(v=>v.partnerId===id&&(v.uses||[]).length).length} used</span></div><div class="kpi money"><span class="eyebrow">Earned</span><span class="v" style="font-size:1.2rem">${fmt(t.earned,p.currency)}</span></div><div class="kpi"><span class="eyebrow">Next invoice</span><span class="v" style="font-size:1.2rem">${fmt(t.open,p.currency)}</span></div></div>
   <section class="panel"><div class="panel-b dl">
     <span>Contact</span><span>${esc(p.contactName||"—")} · ${esc(p.email||"—")}</span><span>Invoice email</span><span>${esc(p.invoiceEmail||p.email||"—")}</span><span>Company no.</span><span>${esc(p.companyId||"—")}</span>
@@ -365,6 +381,8 @@ document.addEventListener("click",async e=>{
   const t=e.target.closest("button,a,tr,[data-close-bg]");if(!t)return;
   if(t.matches("[data-close-bg]")&&e.target===t){closeDrawer();return}
   const d=t.dataset;
+  if(d.pf){S.pf=d.pf;render();return}
+  if(d.pfGo){S.pf=d.pfGo;S.tab="partners";try{sessionStorage.setItem("hysa-tab","partners")}catch(_){}render();return}
   if(d.tab){S.tab=d.tab;try{sessionStorage.setItem("hysa-tab",S.tab)}catch(_){}render();return}
   if(t.hasAttribute("data-go-review")){S.tab="sales";S.sf.status="review";render();return}
   if(d.openPartner){partnerDetail(d.openPartner);return}
@@ -379,13 +397,16 @@ document.addEventListener("click",async e=>{
   else if(a==="logout"){await fetch(API+"/api/admin/logout",{credentials:"include"});renderLogin()}
   else if(a==="new-partner")partnerForm();
   else if(a==="edit-partner")partnerForm(pa);
-  else if(a==="approve"){Object.assign(touch(pa),{status:"approved",approvedAt:L.nowISO()});pa.agreement.validFrom=pa.agreement.validFrom||L.today();commit();partnerDetail(pa.id);toast("Approved. The partner gets a welcome email within the hour.")}
-  else if(a==="reject"){if(confirm2("Click again to reject")){touch(pa).status="rejected";commit();closeDrawer();toast("Rejected")}}
+  else if(a==="approve"){L.logChanges(pa,[{at:L.nowISO(),by:"Hýsa",field:"status",label:"Status",from:pa.status,to:"approved"}]);Object.assign(touch(pa),{status:"approved",approvedAt:L.nowISO()});pa.agreement.validFrom=pa.agreement.validFrom||L.today();commit();partnerDetail(pa.id);toast("Approved. The partner gets a welcome email within the hour.")}
+  else if(a==="reject"){if(confirm2("Click again to reject")){L.logChanges(pa,[{at:L.nowISO(),by:"Hýsa",field:"status",label:"Status",from:pa.status,to:"rejected"}]);touch(pa).status="rejected";commit();closeDrawer();toast("Rejected")}}
   else if(a==="del-partner"){if(confirm2("Click again to delete")){touch(pa).deleted=true;commit();closeDrawer();toast("Deleted")}}
   else if(a==="new-sale")saleForm({partner:d.partner});
   else if(a==="edit-sale")saleForm({sale:sa});
   else if(a==="approve-sale"){Object.assign(touch(sa),{review:"approved"});commit();saleDetail(sa.id);toast("Approved")}
   else if(a==="reject-sale"){if(confirm2("Click again to reject")){touch(sa).review="rejected";commit();closeDrawer();toast("Rejected")}}
+  else if(a==="del-voucher"){const v=byId(S.data.vouchers||[],d.id);if(!v)return;if(confirm2("Click again to delete")){touch(v).deleted=true;
+    const ids=[v.guestSaleId,...(v.uses||[]).map(u=>u.saleId)].filter(Boolean);let kept=0;for(const id of ids){const s=byId(S.data.sales,id);if(!s||s.deleted)continue;if(s.invoiceId&&!byId(S.data.invoices,s.invoiceId)?.deleted){kept++;continue}touch(s).deleted=true}
+    commit();toast(kept?"Voucher deleted. Sales already on an invoice were kept.":"Voucher deleted")}}
   else if(a==="del-sale"){if(confirm2("Click again to delete")){touch(sa).deleted=true;commit();closeDrawer()}}
   else if(a==="create-invoice"){const p=byId(S.data.partners,S.inv.partner),list=openForInv();if(!p||!list.length)return;
     const v=L.createInvoice({invoices:S.data.invoices,settings:S.data.settings,partner:p,sales:list,from:S.inv.from||undefined,to:S.inv.to||undefined});commit();invoiceDetail(v.id);toast(v.sendRequested?"Created. Emailed within the hour.":"Created. Add an invoice email on the partner to send it.")}
@@ -418,6 +439,12 @@ document.addEventListener("submit",e=>{
       agreement:{type:v("pType"),rate:+v("pRate")||0,validFrom:v("pFrom")||L.today(),validTo:v("pTo"),notes:v("pNotes")},
       integration:{...(old?.integration||{}),type:v("iType"),shop:v("iShop"),token:v("iTok"),url:v("iUrl"),key:v("iKey"),secret:v("iSec")},updatedAt:ts};
     if(!p.name){toast("Add the business name");return}
+    if(old){const at=L.nowISO(),ch=L.diffChanges(old,p,"Hýsa"),oi=old.integration||{},ni=p.integration;
+      if(L.agrLabel(old)!==L.agrLabel(p))ch.push({at,by:"Hýsa",field:"agreement",label:"Commission",from:L.agrLabel(old),to:L.agrLabel(p)});
+      if((old.agreement?.validTo||"")!==(p.agreement.validTo||""))ch.push({at,by:"Hýsa",field:"validTo",label:"Agreement end",from:old.agreement?.validTo||"ongoing",to:p.agreement.validTo||"ongoing"});
+      if((old.showOnGuide!==false)!==p.showOnGuide)ch.push({at,by:"Hýsa",field:"showOnGuide",label:"Shown in guest guide",from:old.showOnGuide!==false?"yes":"no",to:p.showOnGuide?"yes":"no"});
+      if(oi.type!==ni.type||oi.key!==ni.key||oi.token!==ni.token||oi.secret!==ni.secret||oi.url!==ni.url||oi.shop!==ni.shop)ch.push({at,by:"Hýsa",field:"integration",label:"Online bookings",from:L.SYSTEMS[oi.type]||"",to:L.SYSTEMS[ni.type]||""});
+      L.logChanges(p,ch)}
     if(!old){p.slug=L.slugify(p.name);let n=2;while(S.data.partners.some(x=>x.slug===p.slug))p.slug=L.slugify(p.name)+"-"+n++;p.trackKey=L.randKey(20);p.portalKey=L.randKey(28);S.data.partners.push(p)}else Object.assign(old,p);
     commit();partnerDetail(p.id);toast("Saved");
   }
