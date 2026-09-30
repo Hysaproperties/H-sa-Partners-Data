@@ -1,0 +1,13 @@
+name = "hysa-partners"
+main = "worker/index.js"
+compatibility_date = "2025-09-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/go/*", "/api/*", "/t.js"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hysa-partners"
+database_id = "__D1_ID__"

@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Hýsa Partner Referrals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;700;800&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+header.top{position:sticky;top:0;z-index:20;background:var(--surface);border-bottom:1px solid var(--line)}
+.top-in{max-width:1240px;margin:0 auto;padding:12px 16px 0;display:flex;flex-direction:column;gap:10px}
+.brand{display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap}
+.brand h1{font-size:1.25rem;font-weight:800;letter-spacing:-.01em}.brand h1 span{color:var(--accent)}
+nav.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
+nav.tabs button{appearance:none;border:0;background:none;color:var(--muted);font:600 .92rem var(--f-body);padding:10px 14px;border-bottom:3px solid transparent;cursor:pointer;white-space:nowrap;display:inline-flex;gap:6px;align-items:center}
+nav.tabs button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent)}
+.badge{background:var(--warn);color:var(--surface);border-radius:999px;font-size:.7rem;padding:0 6px;line-height:1.5}
+main.admin{max-width:1240px;margin:0 auto;padding-block:22px 60px;padding-inline:16px;display:flex;flex-direction:column;gap:20px}
+.grid2{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:20px}
+@media (max-width:900px){.grid2{grid-template-columns:1fr}}
+.search{max-width:280px}
+.bar{height:8px;border-radius:4px;background:var(--sunk);overflow:hidden;min-width:60px}.bar i{display:block;height:100%;background:var(--accent)}
+.drawer-bg{position:fixed;inset:0;background:rgba(10,16,14,.45);z-index:50;display:flex;justify-content:flex-end}
+.drawer{background:var(--bg);width:min(700px,100%);height:100%;overflow-y:auto;box-shadow:var(--shadow);display:flex;flex-direction:column}
+.drawer-h{position:sticky;top:0;background:var(--surface);border-bottom:1px solid var(--line);padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:10px;z-index:2}
+.drawer-b{padding:16px;display:flex;flex-direction:column;gap:16px;padding-bottom:40px}
+.dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 14px;font-size:.9rem}.dl>span:nth-child(odd){color:var(--muted)}.dl>span{overflow-wrap:anywhere}
+.lock{min-height:100vh;display:grid;place-items:center;padding:24px 16px}
+.lock .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:28px;width:min(420px,100%);display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow)}
+.log{font:12px/1.6 var(--f-mono);color:var(--muted);max-height:180px;overflow:auto;white-space:pre-wrap}
+.receipt-img{max-width:100%;border-radius:6px;border:1px solid var(--line)}
+@media print{body *{visibility:hidden}.print-area,.print-area *{visibility:visible}.print-area{position:absolute;inset:0;padding:24px;background:#fff;color:#000}.no-print{display:none!important}}
+@media (prefers-reduced-motion:no-preference){.drawer{animation:slide .18s ease-out}@keyframes slide{from{transform:translateX(24px);opacity:.6}}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="drawerRoot"></div>
+<script type="module">
+import * as L from "/assets/lib.js";
+const API=window.HYSA_API||"";
+const $=s=>document.querySelector(s);
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=L.fmtMoney;
+const fdate=d=>{if(!d)return"—";const x=new Date(d);return isNaN(x)?esc(d):x.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})};
+const toast=m=>{const t=document.createElement("div");t.className="toast";t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),2800)};
+async function copy(text,label="Copied"){try{await navigator.clipboard.writeText(text);toast(label)}catch(e){toast("Select the text and copy it manually")}}
+function download(name,text,type="text/csv"){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000)}
+
+const S={data:null,snap:new Map(),tab:"overview",q:{partners:"",sales:""},sf:{partner:"",status:"",how:""},inv:{partner:"",from:"",to:""},saving:null};
+try{S.tab=sessionStorage.getItem("hysa-tab")||"overview"}catch(e){}
+const live=a=>(a||[]).filter(x=>!x.deleted);
+const P=()=>live(S.data.partners),SA=()=>live(S.data.sales),IV=()=>live(S.data.invoices);
+const byId=(arr,id)=>arr.find(x=>x.id===id);
+const touch=o=>{o.updatedAt=L.nowISO();return o};
+
+/* ---------- api ---------- */
+async function api(path,opt={}){const r=await fetch(API+path,{credentials:"include",headers:{"Content-Type":"application/json"},...opt});const j=await r.json().catch(()=>({}));if(r.status===401){renderLogin();throw new Error("Please log in")}if(!r.ok)throw new Error(j.error||"Request failed");return j}
+function snapshot(){S.snap.clear();for(const [k,arr] of [["partner",S.data.partners],["sale",S.data.sales],["invoice",S.data.invoices]])for(const d of arr)S.snap.set(k+":"+d.id,JSON.stringify(d));S.snap.set("settings:main",JSON.stringify(S.data.settings))}
+async function load(){S.data=await api("/api/admin/data");snapshot();renderShell()}
+let saveTimer,saveQ=Promise.resolve();
+function commit(){render();clearTimeout(saveTimer);saveTimer=setTimeout(()=>{saveQ=saveQ.then(doSave)},300)}
+async function doSave(){
+  const docs=[];
+  for(const [k,arr] of [["partner",S.data.partners],["sale",S.data.sales],["invoice",S.data.invoices]])for(const d of arr){const j=JSON.stringify(d);if(S.snap.get(k+":"+d.id)!==j)docs.push({kind:k,doc:d})}
+  const sj=JSON.stringify(S.data.settings);if(S.snap.get("settings:main")!==sj)docs.push({kind:"settings",doc:S.data.settings});
+  if(!docs.length)return;
+  setSaving("Saving…");
+  try{await api("/api/admin/upsert",{method:"POST",body:JSON.stringify({docs})});for(const d of docs)S.snap.set(d.kind+":"+d.doc.id,JSON.stringify(d.doc));setSaving("All changes saved","ok")}
+  catch(e){setSaving("Not saved: "+e.message,"bad")}
+}
+function setSaving(msg,kind=""){S.saving={msg,kind};const el=$("#saveState");if(el)el.innerHTML=savingHTML()}
+const savingHTML=()=>S.saving?`<span class="chip ${S.saving.kind}">${esc(S.saving.msg)}</span>`:"";
+
+/* ---------- login ---------- */
+function renderLogin(){
+  $("#drawerRoot").innerHTML="";
+  $("#app").innerHTML=`<div class="lock"><div class="card"><div><div class="eyebrow">Hýsa</div><h2>Partner Referrals</h2></div>
+  <form id="loginForm" class="stack" style="gap:12px"><label class="f">Password<input id="pw" type="password" autocomplete="current-password" required autofocus></label><div id="lockErr"></div><button class="btn pri" type="submit">Log in</button></form></div></div>`;
+  $("#loginForm").onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector("button");b.disabled=true;
+    try{const r=await fetch(API+"/api/admin/login",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:$("#pw").value})});if(!r.ok)throw 0;await load()}
+    catch(_){$("#lockErr").innerHTML='<div class="notice bad">Wrong password.</div>';b.disabled=false}};
+}
+
+/* ---------- shell ---------- */
+const TABS=[["overview","Overview"],["partners","Partners"],["sales","Sales"],["invoicing","Invoices"],["settings","Settings"]];
+function renderShell(){
+  $("#app").innerHTML=`<header class="top no-print"><div class="top-in">
+    <div class="brand"><h1>Hýsa <span>Partner Referrals</span></h1><div class="row"><span id="saveState">${savingHTML()}</span><a class="btn sm" href="/" target="_blank" rel="noopener">Guest guide</a><button class="btn sm" data-act="reload">Reload</button><button class="btn sm" data-act="logout">Log out</button></div></div>
+    <nav class="tabs" id="tabs"></nav></div></header><main class="admin" id="main"></main>`;
+  render();
+}
+function render(){
+  const m=$("#main");if(!m)return;
+  const pend=P().filter(p=>p.status==="pending").length,rev=SA().filter(s=>s.review==="pending").length;
+  $("#tabs").innerHTML=TABS.map(([k,v])=>`<button data-tab="${k}" aria-selected="${S.tab===k}">${v}${k==="partners"&&pend?`<span class="badge">${pend}</span>`:""}${k==="sales"&&rev?`<span class="badge">${rev}</span>`:""}</button>`).join("");
+  const f=document.activeElement?.id,pos=f&&document.activeElement.selectionStart;
+  m.innerHTML=({overview:vOverview,partners:vPartners,sales:vSales,invoicing:vInvoicing,settings:vSettings}[S.tab])();
+  if(f){const el=document.getElementById(f);if(el&&m.contains(el)){el.focus();try{el.setSelectionRange(pos,pos)}catch(e){}}}
+}
+const statusChip=s=>s.review==="pending"?'<span class="chip warn">Needs approval</span>':s.review==="rejected"?'<span class="chip bad">Rejected</span>':s.status==="paid"?'<span class="chip ok">Paid</span>':s.status==="invoiced"?'<span class="chip info">Invoiced</span>':'<span class="chip">Next invoice</span>';
+const howChip=s=>({shopify:'<span class="chip info">Online · Shopify</span>',woocommerce:'<span class="chip info">Online · WooCommerce</span>',script:'<span class="chip info">Online · website</span>',partner:'<span class="chip acc">In person · partner</span>',guest:'<span class="chip acc">In person · guest receipt</span>',admin:'<span class="chip">Added by Hýsa</span>'}[s.source]||"");
+const pStatus=p=>p.status==="pending"?'<span class="chip warn">Awaiting approval</span>':p.status==="rejected"?'<span class="chip bad">Rejected</span>':L.agreementActive(p)?'<span class="chip ok">Live</span>':'<span class="chip">Inactive</span>';
+const trackChip=p=>{const i=p.integration||{};if(i.type==="shopify"||i.type==="woocommerce")return i.lastError?'<span class="chip bad">Error</span>':(i.token||i.key)?`<span class="chip acc">${L.SYSTEMS[i.type]}</span>`:'<span class="chip warn">Not connected</span>';if(i.type==="script")return p.lastConversionAt?'<span class="chip acc">Tracking code</span>':'<span class="chip warn">Code not seen yet</span>';return '<span class="chip">In person</span>'};
+function totals(list){let earned=0,open=0,inv=0,rev=0;for(const s of list){if(!L.billable(s))continue;const c=+s.commission||0;earned+=c;rev+=+s.amount||0;if(s.status==="invoiced")inv+=c;else if(s.status!=="paid")open+=c}return{earned,open,inv,rev}}
+const clicks=id=>S.data.clickStats?.[id]||{total:0,last30:0};
+function emptyState(t,b,act,btn){return `<div class="empty"><b style="color:var(--fg)">${esc(t)}</b><span>${esc(b)}</span>${act?`<button class="btn sm" data-act="${act}">${esc(btn)}</button>`:""}</div>`}
+
+function vOverview(){
+  const sales=SA(),t=totals(sales),partners=P();
+  const pend=partners.filter(p=>p.status==="pending"),rev=sales.filter(s=>s.review==="pending");
+  const byP={};for(const s of sales.filter(L.billable)){byP[s.partnerId]=byP[s.partnerId]||{c:0,n:0};byP[s.partnerId].c+=+s.commission||0;byP[s.partnerId].n++}
+  const rows=partners.filter(p=>p.status==="approved").map(p=>({p,...(byP[p.id]||{c:0,n:0}),k:clicks(p.id)})).sort((a,b)=>b.c-a.c);const max=Math.max(1,...rows.map(r=>r.c));
+  const sync=S.data.sync||{};const totalClicks=Object.values(S.data.clickStats||{}).reduce((a,c)=>a+c.last30,0);
+  return `
+  ${pend.length||rev.length?`<div class="notice warn row spread"><span>${pend.length?`${pend.length} new partner sign-up${pend.length>1?"s":""} to approve. `:""}${rev.length?`${rev.length} guest receipt${rev.length>1?"s":""} to check.`:""}</span><span class="row">${pend.length?'<button class="btn sm" data-tab="partners">Review partners</button>':""}${rev.length?'<button class="btn sm" data-go-review>Check receipts</button>':""}</span></div>`:""}
+  <div class="kpis">
+    <div class="kpi money"><span class="eyebrow">Commission earned</span><span class="v">${fmt(t.earned)}</span><span class="d">excl. VAT, from ${fmt(t.rev)} in sales</span></div>
+    <div class="kpi"><span class="eyebrow">For next invoice</span><span class="v">${fmt(t.open)}</span><span class="d">invoiced automatically on day ${+S.data.settings.invoiceDay||1}</span></div>
+    <div class="kpi"><span class="eyebrow">Invoiced, unpaid</span><span class="v">${fmt(t.inv)}</span><span class="d">${IV().filter(i=>i.status!=="paid").length} open invoices</span></div>
+    <div class="kpi"><span class="eyebrow">Guests sent</span><span class="v">${totalClicks}</span><span class="d">link clicks, last 30 days</span></div>
+  </div>
+  <section class="panel"><div class="panel-h"><h3>Links to share</h3></div><div class="panel-b stack" style="gap:10px">
+    ${[["Guest guide: send to every guest","/"],["Partner sign-up: send to businesses","/join.html"],["Receipt upload for guests","/receipt.html"]].map(([l,p])=>`<div class="row"><span style="min-width:220px" class="sm">${l}</span><span class="mono" style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(S.data.origin+p)}</span><button class="btn sm" data-copy="${esc(S.data.origin+p)}">Copy</button></div>`).join("")}
+  </div></section>
+  <div class="grid2">
+    <section class="panel"><div class="panel-h"><h3>By partner</h3><span class="sm">${rows.length} live partners</span></div>
+      ${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Partner</th><th class="num">Clicks 30d</th><th class="num">Sales</th><th style="width:20%"></th><th class="num">Commission</th></tr></thead><tbody>
+      ${rows.map(r=>`<tr class="click" data-open-partner="${r.p.id}"><td><b>${esc(r.p.name)}</b><div class="sm">${esc(L.agrLabel(r.p))}</div></td><td class="num">${r.k.last30}</td><td class="num">${r.n}</td><td><div class="bar"><i style="width:${(r.c/max*100).toFixed(1)}%"></i></div></td><td class="num"><b>${fmt(r.c,r.p.currency)}</b></td></tr>`).join("")}
+      </tbody></table></div>`:emptyState("No live partners yet","Share the partner sign-up link, or add a partner yourself.","new-partner","Add partner")}
+    </section>
+    <section class="panel"><div class="panel-h"><h3>Automatic checks</h3></div><div class="panel-b stack" style="gap:10px">
+      <div class="sm">Last run: <b>${sync.lastRun?new Date(sync.lastRun).toLocaleString("en-GB"):"not run yet"}</b> · every hour. Fetches webshop orders, sends emails and monthly invoices.</div>
+      ${(sync.log||[]).length?`<div class="log">${esc((sync.log||[]).slice(0,14).join("\n"))}</div>`:""}
+    </div></section>
+  </div>
+  <section class="panel"><div class="panel-h"><h3>Latest sales</h3><button class="btn sm pri" data-act="new-sale">Add sale</button></div>
+    ${sales.length?salesTable([...sales].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).slice(0,8)):emptyState("No sales yet","Online sales arrive automatically. In-person sales are registered by the partner.")}
+  </section>`;
+}
+
+function vPartners(){
+  const q=S.q.partners.toLowerCase();
+  const list=P().filter(p=>!q||[p.name,p.category,p.contactName,p.email].join(" ").toLowerCase().includes(q)).sort((a,b)=>(a.status==="pending"?0:1)-(b.status==="pending"?0:1)||a.name.localeCompare(b.name));
+  const earned={};for(const s of SA().filter(L.billable))earned[s.partnerId]=(earned[s.partnerId]||0)+(+s.commission||0);
+  return `<div class="row spread"><div><h2>Partners</h2><div class="muted" style="font-size:.9rem">Businesses sign up themselves on the partner page. Approve them here and set the commission.</div></div>
+  <div class="row"><input class="search" id="qPartners" placeholder="Search partners" value="${esc(S.q.partners)}"><button class="btn" data-copy="${esc(S.data.origin+"/join.html")}">Copy sign-up link</button><button class="btn pri" data-act="new-partner">Add partner</button></div></div>
+  <section class="panel">${list.length?`<div class="tbl-wrap"><table><thead><tr><th>Partner</th><th>Category</th><th>Commission</th><th>Tracking</th><th class="num">Clicks 30d</th><th class="num">Earned</th><th>Status</th></tr></thead><tbody>
+  ${list.map(p=>`<tr class="click" data-open-partner="${p.id}"><td><b>${esc(p.name)}</b><div class="sm">${esc(p.email||"")}</div></td><td>${esc(p.category)}</td><td><span class="chip money">${esc(L.agrLabel(p))}</span></td><td>${trackChip(p)}</td><td class="num">${clicks(p.id).last30}</td><td class="num">${fmt(earned[p.id]||0,p.currency)}</td><td>${pStatus(p)}</td></tr>`).join("")}
+  </tbody></table></div>`:emptyState(P().length?"No partners match":"No partners yet",P().length?"Try another search.":"Share the sign-up link with local businesses, or add one yourself.","new-partner","Add partner")}</section>`;
+}
+
+function salesTable(list){
+  return `<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Partner</th><th>How</th><th>Guest</th><th class="num">Purchase</th><th class="num">Commission</th><th>Status</th></tr></thead><tbody>
+  ${list.map(s=>{const p=byId(S.data.partners,s.partnerId);return `<tr class="click" data-open-sale="${s.id}"><td class="mono" style="white-space:nowrap">${fdate(s.date)}</td><td><b>${esc(p?.name||"—")}</b><div class="sm">${esc(s.orderRef?"No. "+s.orderRef:"")}</div></td><td>${howChip(s)}${s.guestReceiptId&&s.source!=="guest"?' <span class="chip ok">Receipt</span>':""}</td><td>${esc(s.guestName||"—")}</td><td class="num">${fmt(s.amount,s.currency)}</td><td class="num"><b style="color:var(--money)">${fmt(s.commission,s.currency)}</b></td><td>${statusChip(s)}</td></tr>`}).join("")}
+  </tbody></table></div>`;
+}
+function vSales(){
+  const q=S.q.sales.toLowerCase(),f=S.sf;
+  const list=SA().filter(s=>{const p=byId(S.data.partners,s.partnerId);if(f.partner&&s.partnerId!==f.partner)return false;
+    if(f.status==="review"&&s.review!=="pending")return false;if(f.status&&f.status!=="review"&&((s.status||"open")!==f.status||s.review==="pending"))return false;
+    if(f.how==="online"&&s.method!=="online")return false;if(f.how==="in-store"&&s.method!=="in-store")return false;
+    return !q||[p?.name,s.guestName,s.guestEmail,s.orderRef].join(" ").toLowerCase().includes(q)}).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  const t=totals(list);
+  return `<div class="row spread"><div><h2>Sales</h2><div class="muted" style="font-size:.9rem">Every purchase by a Hýsa guest, per partner. Online orders arrive automatically; in-person purchases are registered by the partner or documented by the guest.</div></div><button class="btn pri" data-act="new-sale">Add sale</button></div>
+  <div class="row"><input class="search" id="qSales" placeholder="Search guest, order no…" value="${esc(S.q.sales)}">
+  <select id="fPartner" style="max-width:220px"><option value="">All partners</option>${P().map(p=>`<option value="${p.id}" ${f.partner===p.id?"selected":""}>${esc(p.name)}</option>`).join("")}</select>
+  <select id="fHow" style="max-width:160px"><option value="">Online and in person</option><option value="online" ${f.how==="online"?"selected":""}>Online</option><option value="in-store" ${f.how==="in-store"?"selected":""}>In person</option></select>
+  <select id="fStatus" style="max-width:180px"><option value="">All statuses</option><option value="review" ${f.status==="review"?"selected":""}>Needs approval</option><option value="open" ${f.status==="open"?"selected":""}>Next invoice</option><option value="invoiced" ${f.status==="invoiced"?"selected":""}>Invoiced</option><option value="paid" ${f.status==="paid"?"selected":""}>Paid</option></select>
+  <span class="sm">${list.length} sales · <b class="mono" style="color:var(--money)">${fmt(t.earned)}</b></span>${list.length?'<button class="btn sm" data-act="csv-sales">Download CSV</button>':""}</div>
+  <section class="panel">${list.length?salesTable(list):emptyState("No sales here","Try another filter.")}</section>`;
+}
+
+function openForInv(){const I=S.inv;return SA().filter(s=>L.billable(s)&&s.partnerId===I.partner&&(!s.status||s.status==="open")&&(!I.from||s.date>=I.from)&&(!I.to||s.date<=I.to))}
+function vInvoicing(){
+  const st=S.data.settings,I=S.inv,p=byId(S.data.partners,I.partner),open=openForInv(),sum=open.reduce((a,s)=>a+(+s.commission||0),0);
+  const openBy={};for(const s of SA())if(L.billable(s)&&(!s.status||s.status==="open"))openBy[s.partnerId]=(openBy[s.partnerId]||0)+(+s.commission||0);
+  return `<div><h2>Invoices</h2><div class="muted" style="font-size:.9rem">${st.autoInvoice!==false?`Created automatically on day ${+st.invoiceDay||1} of each month for the previous month, with ${st.vatRate}% VAT and ${st.paymentDays} days payment terms, and emailed as PDF from ${esc(st.invoiceEmail)} to each partner's invoice email.`:"Automatic monthly invoicing is switched off in Settings."}</div></div>
+  <div class="grid2">
+    <section class="panel"><div class="panel-h"><h3>Invoice now</h3></div><div class="panel-b stack" style="gap:12px">
+      <div class="form">
+        <label class="f full">Partner<select id="iPartner"><option value="">Choose partner…</option>${P().map(x=>`<option value="${x.id}" ${I.partner===x.id?"selected":""}>${esc(x.name)}${openBy[x.id]?` — ${fmt(openBy[x.id],x.currency)} to bill`:""}</option>`).join("")}</select></label>
+        <label class="f">From<input type="date" id="iFrom" value="${esc(I.from)}"></label><label class="f">To<input type="date" id="iTo" value="${esc(I.to)}"></label>
+      </div>
+      ${p?(open.length?`<div class="calc"><span>${open.length} sales · subtotal ${fmt(sum,p.currency)}</span><span class="mono">Total incl. ${st.vatRate}% VAT ${fmt(sum*(1+(+st.vatRate||0)/100),p.currency)}</span></div>
+      <div class="row"><button class="btn pri" data-act="create-invoice">Create &amp; email invoice</button><span class="sm">Sent to ${esc(p.invoiceEmail||p.email||"no email")}</span></div>`:`<div class="muted">Nothing to bill for ${esc(p.name)}.</div>`):`<div class="muted">Choose a partner.</div>`}
+    </div></section>
+    <section class="panel"><div class="panel-h"><h3>All invoices</h3></div>
+    ${IV().length?`<div class="tbl-wrap"><table><thead><tr><th>No.</th><th>Partner</th><th class="num">Total</th><th>Status</th></tr></thead><tbody>
+    ${[...IV()].sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")).map(v=>`<tr class="click" data-open-invoice="${v.id}"><td class="mono">${esc(v.number)}<div class="sm">${fdate(v.createdAt)}</div></td><td>${esc(byId(S.data.partners,v.partnerId)?.name||v.partnerName)}<div class="sm">${esc(v.from)} – ${esc(v.to)}</div></td><td class="num">${fmt(v.total,v.currency)}</td><td>${v.status==="paid"?'<span class="chip ok">Paid</span>':(v.dueDate<L.today()?'<span class="chip bad">Overdue</span>':'<span class="chip info">Awaiting payment</span>')}<div class="sm">${v.sentAt?"Emailed "+fdate(v.sentAt):v.sendError?"Email failed":v.sendRequested?"Sending within the hour":"Not emailed"}</div></td></tr>`).join("")}
+    </tbody></table></div>`:emptyState("No invoices yet","They appear here when created.")}</section>
+  </div>`;
+}
+
+function vSettings(){
+  const st=S.data.settings;
+  return `<div><h2>Settings</h2></div>
+  <section class="panel"><div class="panel-b"><form id="setForm" class="form">
+    <div class="sect" style="border:0;padding:0;margin:0"><h3>Company</h3></div>
+    <label class="f">Company name<input id="stCompany" value="${esc(st.company)}"></label>
+    <label class="f">Company no. / V-tal<input id="stCid" value="${esc(st.companyId)}"></label>
+    <label class="f">Address<input id="stAddr" value="${esc(st.address)}"></label>
+    <label class="f">Copy of all emails to<input id="stMail" type="email" value="${esc(st.notifyEmail)}"></label>
+    <div class="sect"><h3>Partners and tracking</h3></div>
+    <label class="f">Standard commission for new sign-ups (%)<input id="stRate" type="number" step="0.1" min="0" value="${esc(st.defaultRate)}"></label>
+    <label class="f">Days a link click counts<input id="stDays" type="number" min="1" max="90" value="${esc(st.cookieDays)}"></label>
+    <div class="sect"><h3>Invoicing</h3></div>
+    <label class="f">Invoices sent from<input id="stInvMail" type="email" value="${esc(st.invoiceEmail)}"></label>
+    <label class="f">Invoice number prefix<input id="stPrefix" value="${esc(st.invoicePrefix)}"></label>
+    <label class="f">VAT %<input id="stVat" type="number" step="0.01" min="0" value="${esc(st.vatRate)}"></label>
+    <label class="f">Payment terms (days)<input id="stPay" type="number" min="0" value="${esc(st.paymentDays)}"></label>
+    <label class="f">Invoice day of month<input id="stDay" type="number" min="1" max="28" value="${esc(st.invoiceDay)}"></label>
+    <label class="check full"><input id="stAuto" type="checkbox" ${st.autoInvoice!==false?"checked":""}> Create and email invoices automatically every month</label>
+    <div class="sect"><h3>Payment details on invoices</h3></div>
+    <label class="f">Bank<input id="stBank" value="${esc(st.bankName)}"></label>
+    <label class="f">Reg. no. / account<div class="row" style="gap:8px;flex-wrap:nowrap"><input id="stReg" value="${esc(st.bankReg)}" style="max-width:90px"><input id="stAcc" value="${esc(st.bankAccount)}"></div></label>
+    <label class="f">IBAN<input id="stIban" class="mono" value="${esc(st.iban)}"></label>
+    <label class="f">BIC / SWIFT<input id="stBic" class="mono" value="${esc(st.bic)}"></label>
+    <div class="full"><button class="btn pri">Save settings</button></div></form></div></section>
+  <section class="panel"><div class="panel-b row"><button class="btn" data-act="backup">Download backup (JSON)</button><span class="sm">The admin password is set as a secret on GitHub (ADMIN_PASSWORD).</span></div></section>`;
+}
+
+/* ---------- drawers ---------- */
+function openDrawer(title,body){$("#drawerRoot").innerHTML=`<div class="drawer-bg" data-close-bg><aside class="drawer" role="dialog" aria-label="${esc(title)}"><div class="drawer-h no-print"><h3>${esc(title)}</h3><button class="btn sm" data-act="close">Close</button></div><div class="drawer-b">${body}</div></aside></div>`}
+const closeDrawer=()=>{$("#drawerRoot").innerHTML=""};
+
+function partnerForm(p={}){
+  const a=p.agreement||{type:"percent",rate:S.data.settings.defaultRate},ig=p.integration||{type:"none"};
+  openDrawer(p.id?`Edit ${p.name}`:"Add partner",`
+  <form id="partnerForm" class="form" data-id="${p.id||""}">
+    <label class="f full">Business name<input id="pName" required value="${esc(p.name)}"></label>
+    <label class="f">Category<select id="pCat">${L.CATEGORIES.map(c=>`<option ${p.category===c?"selected":""}>${c}</option>`).join("")}</select></label>
+    <label class="f">Currency<select id="pCur">${["DKK","EUR","ISK","NOK","GBP","USD"].map(c=>`<option ${(p.currency||"DKK")===c?"selected":""}>${c}</option>`).join("")}</select></label>
+    <label class="f full">Website<input id="pWeb" value="${esc(p.website)}" placeholder="https://…"></label>
+    <label class="f">Phone<input id="pPhone" value="${esc(p.phone)}"></label>
+    <label class="f">Email for guests<input id="pPubMail" value="${esc(p.publicEmail)}"></label>
+    <label class="f">Address<input id="pAddr" value="${esc(p.address)}"></label>
+    <label class="f">Opening hours<input id="pHours" value="${esc(p.hours)}"></label>
+    <label class="f full">Description (English)<textarea id="pDesc">${esc(p.description)}</textarea></label>
+    <label class="f">Guest offer<input id="pOffer" value="${esc(p.discountText)}"></label>
+    <label class="f">Discount code<input id="pCode" class="mono" value="${esc(p.discountCode)}"></label>
+    <div class="sect"><h3>Contact and invoicing</h3></div>
+    <label class="f">Contact person<input id="pContact" value="${esc(p.contactName)}"></label>
+    <label class="f">Contact email <span class="hint">sale notifications</span><input id="pEmail" type="email" value="${esc(p.email)}"></label>
+    <label class="f">Invoice email<input id="pInvEmail" type="email" value="${esc(p.invoiceEmail)}"></label>
+    <label class="f">Company no. / V-tal<input id="pCid" value="${esc(p.companyId)}"></label>
+    <div class="sect"><h3>Commission</h3></div>
+    <label class="f">Type<select id="pType">${Object.entries(L.AGR).map(([k,v])=>`<option value="${k}" ${(a.type||"percent")===k?"selected":""}>${v}</option>`).join("")}</select></label>
+    <label class="f"><span id="pRateLbl">${(a.type||"percent")==="percent"?"Commission %":"Amount"}</span><input id="pRate" type="number" step="0.01" min="0" required value="${esc(a.rate??"")}"></label>
+    <label class="f">Valid from<input id="pFrom" type="date" value="${esc(a.validFrom)}"></label>
+    <label class="f">Valid to <span class="hint">blank = ongoing</span><input id="pTo" type="date" value="${esc(a.validTo)}"></label>
+    <label class="f full">Notes<textarea id="pNotes" style="min-height:60px">${esc(a.notes)}</textarea></label>
+    <label class="check full"><input id="pShow" type="checkbox" ${p.showOnGuide!==false?"checked":""}> Show in the guest guide</label>
+    <label class="check full"><input id="pAutoInv" type="checkbox" ${p.autoInvoice!==false?"checked":""}> Invoice automatically every month</label>
+    <div class="sect"><h3>Online bookings</h3></div>
+    <label class="f full">System<select id="iType">${Object.entries(L.SYSTEMS).map(([k,v])=>`<option value="${k}" ${ig.type===k?"selected":""}>${v}</option>`).join("")}</select></label>
+    <div class="full form" id="igShopify" ${ig.type==="shopify"?"":"hidden"}><label class="f">Shop address<input id="iShop" class="mono" value="${esc(ig.shop)}"></label><label class="f">Access token<input id="iTok" class="mono" type="password" value="${esc(ig.token)}" autocomplete="off"></label></div>
+    <div class="full form" id="igWoo" ${ig.type==="woocommerce"?"":"hidden"}><label class="f full">Shop URL<input id="iUrl" class="mono" value="${esc(ig.url)}"></label><label class="f">Consumer key<input id="iKey" class="mono" value="${esc(ig.key)}" autocomplete="off"></label><label class="f">Consumer secret<input id="iSec" class="mono" type="password" value="${esc(ig.secret)}" autocomplete="off"></label></div>
+    <div class="full row spread" style="margin-top:6px"><div>${p.id?`<button type="button" class="btn danger" data-act="del-partner" data-id="${p.id}">Delete partner</button>`:""}</div><button class="btn pri" type="submit">Save partner</button></div>
+  </form>`);
+}
+
+function partnerDetail(id){
+  const p=byId(S.data.partners,id);if(!p)return;
+  const sales=SA().filter(s=>s.partnerId===id).sort((a,b)=>(b.date||"").localeCompare(a.date||""));const t=totals(sales),k=clicks(id);
+  const portal=`${S.data.origin}/partner.html#${p.portalKey}`,go=`${S.data.origin}/go/${p.slug}`;const i=p.integration||{};
+  openDrawer(p.name,`
+  ${p.status==="pending"?`<div class="notice warn stack" style="gap:10px"><b>Signed up ${fdate(p.signupAt)}. Check the details and commission, then approve.</b><div class="row"><button class="btn pri" data-act="approve" data-id="${p.id}">Approve at ${esc(L.agrLabel(p))}</button><button class="btn" data-act="edit-partner" data-id="${p.id}">Change commission first</button><button class="btn danger" data-act="reject" data-id="${p.id}">Reject</button></div></div>`:""}
+  <div class="row">${pStatus(p)}<span class="chip">${esc(p.category)}</span><span class="chip money">${esc(L.agrLabel(p))}</span>${trackChip(p)}</div>
+  <div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr))"><div class="kpi"><span class="eyebrow">Clicks 30d</span><span class="v" style="font-size:1.2rem">${k.last30}</span><span class="d">${k.total} in total</span></div><div class="kpi money"><span class="eyebrow">Earned</span><span class="v" style="font-size:1.2rem">${fmt(t.earned,p.currency)}</span></div><div class="kpi"><span class="eyebrow">Next invoice</span><span class="v" style="font-size:1.2rem">${fmt(t.open,p.currency)}</span></div></div>
+  <section class="panel"><div class="panel-b dl">
+    <span>Contact</span><span>${esc(p.contactName||"—")} · ${esc(p.email||"—")}</span><span>Invoice email</span><span>${esc(p.invoiceEmail||p.email||"—")}</span><span>Company no.</span><span>${esc(p.companyId||"—")}</span>
+    <span>Website</span><span>${esc(p.website||"—")}</span><span>Phone</span><span>${esc(p.phone||"—")}</span><span>Address</span><span>${esc(p.address||"—")}</span><span>Opening hours</span><span>${esc(p.hours||"—")}</span>
+    <span>Guest offer</span><span>${esc([p.discountText,p.discountCode].filter(Boolean).join(" · ")||"—")}</span>
+    <span>Online bookings</span><span>${esc(L.SYSTEMS[i.type]||"—")}${i.lastError?` · <b style="color:var(--bad)">${esc(i.lastError)}</b>`:i.lastSync?` · checked ${fdate(i.lastSync)}`:""}</span>
+    <span>Tracked link</span><span class="mono" style="font-size:.8rem">${esc(go)}</span>
+    <span>Partner page</span><span class="mono" style="font-size:.8rem">${esc(portal)}</span>
+  </div></section>
+  <div class="row"><button class="btn pri" data-act="edit-partner" data-id="${p.id}">Edit</button><button class="btn" data-copy="${esc(portal)}">Copy partner page link</button><button class="btn" data-act="new-sale" data-partner="${p.id}">Add sale</button></div>
+  <section class="panel"><div class="panel-h"><h3>Sales</h3></div>${sales.length?salesTable(sales):emptyState("No sales yet","")}</section>`);
+}
+
+function saleForm(pre={}){
+  const s=pre.sale||{};
+  openDrawer(s.id?"Edit sale":"Add sale",`
+  <form id="saleForm" class="form" data-id="${s.id||""}">
+    <label class="f full">Partner<select id="sPartner" required><option value="">Choose partner…</option>${P().filter(p=>p.status==="approved").map(p=>`<option value="${p.id}" ${(s.partnerId||pre.partner)===p.id?"selected":""}>${esc(p.name)} — ${esc(L.agrLabel(p))}</option>`).join("")}</select></label>
+    <label class="f">How<select id="sMethod"><option value="in-store" ${s.method!=="online"?"selected":""}>In person</option><option value="online" ${s.method==="online"?"selected":""}>Online</option></select></label>
+    <label class="f">Date<input id="sDate" type="date" required value="${esc((s.date||L.today()).slice(0,10))}"></label>
+    <label class="f">Amount<input id="sAmount" type="number" step="0.01" min="0" value="${esc(s.amount??"")}"></label>
+    <label class="f">Persons<input id="sPersons" type="number" min="1" value="${esc(s.persons??1)}"></label>
+    <label class="f full">Order / receipt no.<input id="sRef" value="${esc(s.orderRef)}"></label>
+    <label class="f full">Guest name<input id="sGName" value="${esc(s.guestName)}"></label>
+    <label class="f">Guest email<input id="sGMail" value="${esc(s.guestEmail)}"></label>
+    <label class="f">Guest phone<input id="sGPhone" value="${esc(s.guestPhone)}"></label>
+    <div class="full calc" id="sCalc">Choose a partner</div>
+    <div class="full row spread"><div>${s.id?`<button type="button" class="btn danger" data-act="del-sale" data-id="${s.id}">Delete sale</button>`:""}</div><button class="btn pri" type="submit">Save sale</button></div>
+  </form>`);updCalc();
+}
+function updCalc(){const el=$("#sCalc");if(!el)return;const p=byId(S.data.partners,$("#sPartner").value);if(!p){el.textContent="Choose a partner";return}
+  el.innerHTML=`<span>${esc(L.agrLabel(p))}</span><span class="mono">Commission ${fmt(L.commission(p,$("#sAmount").value,$("#sPersons").value),p.currency)}</span>`}
+
+function saleDetail(id){
+  const s=byId(S.data.sales,id);if(!s)return;const p=byId(S.data.partners,s.partnerId);
+  openDrawer("Sale",`
+  ${s.review==="pending"?`<div class="notice warn stack" style="gap:10px"><b>A guest sent this receipt, but ${esc(p?.name||"the partner")} has not registered the purchase.</b><span>Check the photo. Approve to include it on the next invoice.</span><div class="row"><button class="btn pri" data-act="approve-sale" data-id="${s.id}">Approve</button><button class="btn danger" data-act="reject-sale" data-id="${s.id}">Reject</button></div></div>`:""}
+  <div class="calc"><span>${esc(p?.name||"")} · ${esc(s.rateLabel||"")}</span><span class="mono">${fmt(s.commission,s.currency)}</span></div>
+  <section class="panel"><div class="panel-b dl">
+    <span>Date</span><span>${fdate(s.date)}</span><span>How</span><span>${howChip(s)} ${s.matchedBy?`<span class="sm">${esc(s.matchedBy)}</span>`:""}</span>
+    <span>Order / receipt</span><span class="mono">${esc(s.orderRef||"—")}</span><span>Purchase</span><span class="mono">${fmt(s.amount,s.currency)} · ${esc(s.persons||1)} persons</span>
+    <span>Guest</span><span>${esc(s.guestName||"—")}</span><span>Guest contact</span><span>${esc(s.guestEmail||"—")} · ${esc(s.guestPhone||"—")}</span>
+    <span>Confirmed by</span><span>${[s.partnerReported?"partner":"",s.guestReceiptId?"guest receipt":"",["shopify","woocommerce","script"].includes(s.source)?"partner's order system":""].filter(Boolean).join(" + ")||"Hýsa"}</span>
+    <span>Status</span><span>${statusChip(s)}</span><span>Partner emailed</span><span>${s.notifiedAt?fdate(s.notifiedAt):"Within the hour"}</span>${s.notes?`<span>Notes</span><span>${esc(s.notes)}</span>`:""}
+  </div></section>
+  ${s.guestReceiptId?`<section class="panel"><div class="panel-h"><h3>Guest's receipt</h3><a class="btn sm" href="${API}/api/admin/file/${esc(s.guestReceiptId)}" target="_blank" rel="noopener">Open full size</a></div><div class="panel-b"><img class="receipt-img" src="${API}/api/admin/file/${esc(s.guestReceiptId)}" alt="Receipt photo"></div></section>`:""}
+  <div class="row"><button class="btn" data-act="edit-sale" data-id="${s.id}">Edit sale</button></div>`);
+}
+
+function invoiceDetail(id){
+  const v=byId(S.data.invoices,id);if(!v)return;const p=byId(S.data.partners,v.partnerId);const st=S.data.settings;
+  const sales=SA().filter(s=>s.invoiceId===id).sort((a,b)=>(a.date||"").localeCompare(b.date||""));
+  openDrawer(`Invoice ${v.number}`,`
+  <div class="print-area stack" style="gap:14px">
+    <div class="row spread" style="align-items:flex-start"><div><div class="eyebrow">Invoice</div><h2>${esc(v.number)}</h2><div class="sm">Issued ${fdate(v.createdAt)} · Due ${fdate(v.dueDate)}</div></div>
+      <div style="text-align:right;font-size:.88rem"><b>${esc(st.company)}</b><br>To: ${esc(p?.name||v.partnerName)}<br>${esc(v.sendTo||"")}</div></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Order / receipt</th><th>How</th><th class="num">Purchase</th><th class="num">Commission</th></tr></thead><tbody>
+    ${sales.map(s=>`<tr><td class="mono">${fdate(s.date)}</td><td class="mono">${esc(s.orderRef||"—")}</td><td class="sm">${s.method==="in-store"?"In person":"Online"}</td><td class="num">${fmt(s.amount,s.currency)}</td><td class="num">${fmt(s.commission,s.currency)}</td></tr>`).join("")}
+    </tbody></table></div>
+    <div class="calc"><span>Subtotal ${fmt(v.net,v.currency)} · VAT ${v.vatRate}% ${fmt(v.vat,v.currency)}</span><span class="mono">Total ${fmt(v.total,v.currency)}</span></div>
+  </div>
+  <div class="no-print">${v.sentAt?`<div class="notice ok">Emailed as PDF to <b>${esc(v.sendTo)}</b> on ${new Date(v.sentAt).toLocaleString("en-GB")}.</div>`:v.sendError?`<div class="notice bad">Sending failed: ${esc(v.sendError)}</div>`:v.sendRequested?`<div class="notice">The PDF is emailed to <b>${esc(v.sendTo)}</b> within the hour.</div>`:'<div class="notice warn">Not emailed.</div>'}</div>
+  <div class="row no-print"><button class="btn" data-act="send-invoice" data-id="${v.id}">${v.sentAt?"Email again":"Email invoice"}</button><button class="btn" data-act="print">Print</button><button class="btn" data-act="csv-invoice" data-id="${v.id}">CSV</button>
+  ${v.status!=="paid"?`<button class="btn pri" data-act="mark-paid" data-id="${v.id}">Mark as paid</button>`:`<button class="btn" data-act="mark-unpaid" data-id="${v.id}">Mark as unpaid</button>`}</div>
+  <div class="row no-print"><button class="btn sm danger" data-act="del-invoice" data-id="${v.id}">Cancel invoice</button></div>`);
+}
+function csvFor(list){const q=v=>`"${String(v??"").replace(/"/g,'""')}"`;
+  return [["Date","Partner","How","Order no.","Guest","Guest email","Guest phone","Amount","Currency","Commission","Status"].map(q).join(","),...list.map(s=>{const p=byId(S.data.partners,s.partnerId);return [s.date,p?.name,s.source,s.orderRef,s.guestName,s.guestEmail,s.guestPhone,(+s.amount||0).toFixed(2),s.currency,(+s.commission||0).toFixed(2),s.review==="pending"?"needs approval":s.status].map(q).join(",")})].join("\r\n")}
+
+/* ---------- events ---------- */
+document.addEventListener("click",async e=>{
+  const t=e.target.closest("button,a,tr,[data-close-bg]");if(!t)return;
+  if(t.matches("[data-close-bg]")&&e.target===t){closeDrawer();return}
+  const d=t.dataset;
+  if(d.tab){S.tab=d.tab;try{sessionStorage.setItem("hysa-tab",S.tab)}catch(_){}render();return}
+  if(t.hasAttribute("data-go-review")){S.tab="sales";S.sf.status="review";render();return}
+  if(d.openPartner){partnerDetail(d.openPartner);return}
+  if(d.openSale){saleDetail(d.openSale);return}
+  if(d.openInvoice){invoiceDetail(d.openInvoice);return}
+  if(d.copy){copy(d.copy);return}
+  const a=d.act;if(!a)return;
+  const confirm2=l=>{if(t.dataset.confirm)return true;t.dataset.confirm=1;t.textContent=l;return false};
+  const pa=d.id&&byId(S.data.partners,d.id),sa=d.id&&byId(S.data.sales,d.id),iv=d.id&&byId(S.data.invoices,d.id);
+  if(a==="close")closeDrawer();
+  else if(a==="reload")load().then(()=>toast("Up to date")).catch(()=>{});
+  else if(a==="logout"){await fetch(API+"/api/admin/logout",{credentials:"include"});renderLogin()}
+  else if(a==="new-partner")partnerForm();
+  else if(a==="edit-partner")partnerForm(pa);
+  else if(a==="approve"){Object.assign(touch(pa),{status:"approved",approvedAt:L.nowISO()});pa.agreement.validFrom=pa.agreement.validFrom||L.today();commit();partnerDetail(pa.id);toast("Approved. The partner gets a welcome email within the hour.")}
+  else if(a==="reject"){if(confirm2("Click again to reject")){touch(pa).status="rejected";commit();closeDrawer();toast("Rejected")}}
+  else if(a==="del-partner"){if(confirm2("Click again to delete")){touch(pa).deleted=true;commit();closeDrawer();toast("Deleted")}}
+  else if(a==="new-sale")saleForm({partner:d.partner});
+  else if(a==="edit-sale")saleForm({sale:sa});
+  else if(a==="approve-sale"){Object.assign(touch(sa),{review:"approved"});commit();saleDetail(sa.id);toast("Approved")}
+  else if(a==="reject-sale"){if(confirm2("Click again to reject")){touch(sa).review="rejected";commit();closeDrawer();toast("Rejected")}}
+  else if(a==="del-sale"){if(confirm2("Click again to delete")){touch(sa).deleted=true;commit();closeDrawer()}}
+  else if(a==="create-invoice"){const p=byId(S.data.partners,S.inv.partner),list=openForInv();if(!p||!list.length)return;
+    const v=L.createInvoice({invoices:S.data.invoices,settings:S.data.settings,partner:p,sales:list,from:S.inv.from||undefined,to:S.inv.to||undefined});commit();invoiceDetail(v.id);toast(v.sendRequested?"Created. Emailed within the hour.":"Created. Add an invoice email on the partner to send it.")}
+  else if(a==="send-invoice"){const p=byId(S.data.partners,iv.partnerId);const to=p?.invoiceEmail||p?.email;if(!to){toast("Add an invoice email on the partner first");return}Object.assign(touch(iv),{sendRequested:true,sentAt:null,sendError:"",sendTo:to});commit();invoiceDetail(iv.id)}
+  else if(a==="mark-paid"||a==="mark-unpaid"){const st=a==="mark-paid"?"paid":"invoiced";Object.assign(touch(iv),{status:st,paidAt:st==="paid"?L.nowISO():null});SA().filter(s=>s.invoiceId===iv.id).forEach(s=>{touch(s).status=st});commit();invoiceDetail(iv.id)}
+  else if(a==="del-invoice"){if(confirm2("Click again to cancel")){touch(iv).deleted=true;SA().filter(s=>s.invoiceId===iv.id).forEach(s=>{touch(s).status="open";s.invoiceId=null});commit();closeDrawer()}}
+  else if(a==="print")window.print();
+  else if(a==="csv-invoice")download(`${iv.number}.csv`,csvFor(SA().filter(s=>s.invoiceId===iv.id)));
+  else if(a==="csv-sales")download(`hysa-sales-${L.today()}.csv`,csvFor(SA()));
+  else if(a==="backup")download(`hysa-backup-${L.today()}.json`,JSON.stringify(S.data,null,2),"application/json");
+});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeDrawer()});
+document.addEventListener("input",e=>{const id=e.target.id;
+  if(id==="qPartners"){S.q.partners=e.target.value;render()}else if(id==="qSales"){S.q.sales=e.target.value;render()}
+  if(["sPartner","sAmount","sPersons"].includes(id))updCalc()});
+document.addEventListener("change",e=>{const id=e.target.id,v=e.target.value;
+  if(id==="fPartner"){S.sf.partner=v;render()}else if(id==="fStatus"){S.sf.status=v;render()}else if(id==="fHow"){S.sf.how=v;render()}
+  else if(id==="iPartner"){S.inv.partner=v;render()}else if(id==="iFrom"){S.inv.from=v;render()}else if(id==="iTo"){S.inv.to=v;render()}
+  else if(id==="pType"){$("#pRateLbl").textContent=v==="percent"?"Commission %":"Amount"}
+  else if(id==="iType"){$("#igShopify").hidden=v!=="shopify";$("#igWoo").hidden=v!=="woocommerce"}
+  if(id==="sPartner")updCalc()});
+document.addEventListener("submit",e=>{
+  e.preventDefault();const f=e.target;const v=id=>(f.querySelector("#"+id)?.value??"").trim();
+  if(f.id==="partnerForm"){
+    const old=f.dataset.id?byId(S.data.partners,f.dataset.id):null,ts=L.nowISO();
+    const p={...(old||{id:L.uid("p_"),status:"approved",approvedAt:ts,createdAt:ts,active:true}),
+      name:v("pName"),category:v("pCat"),currency:v("pCur"),website:v("pWeb"),phone:v("pPhone"),publicEmail:v("pPubMail"),address:v("pAddr"),hours:v("pHours"),description:v("pDesc"),
+      discountText:v("pOffer"),discountCode:v("pCode"),contactName:v("pContact"),email:v("pEmail"),invoiceEmail:v("pInvEmail"),companyId:v("pCid"),
+      showOnGuide:f.querySelector("#pShow").checked,autoInvoice:f.querySelector("#pAutoInv").checked,
+      agreement:{type:v("pType"),rate:+v("pRate")||0,validFrom:v("pFrom")||L.today(),validTo:v("pTo"),notes:v("pNotes")},
+      integration:{...(old?.integration||{}),type:v("iType"),shop:v("iShop"),token:v("iTok"),url:v("iUrl"),key:v("iKey"),secret:v("iSec")},updatedAt:ts};
+    if(!p.name){toast("Add the business name");return}
+    if(!old){p.slug=L.slugify(p.name);let n=2;while(S.data.partners.some(x=>x.slug===p.slug))p.slug=L.slugify(p.name)+"-"+n++;p.trackKey=L.randKey(20);p.portalKey=L.randKey(28);S.data.partners.push(p)}else Object.assign(old,p);
+    commit();partnerDetail(p.id);toast("Saved");
+  }
+  if(f.id==="saleForm"){
+    const p=byId(S.data.partners,v("sPartner"));if(!p){toast("Choose a partner");return}
+    const amount=+v("sAmount")||0,persons=+v("sPersons")||1,old=f.dataset.id?byId(S.data.sales,f.dataset.id):null,ts=L.nowISO();
+    const s={...(old||{id:L.uid("s_"),createdAt:ts,status:"open",review:"approved",source:"admin"}),partnerId:p.id,method:v("sMethod"),date:v("sDate"),amount,persons,orderRef:v("sRef"),
+      guestName:v("sGName"),guestEmail:v("sGMail"),guestPhone:v("sGPhone"),currency:p.currency||"DKK",commission:L.commission(p,amount,persons),rateLabel:L.agrLabel(p),updatedAt:ts};
+    if(old)Object.assign(old,s);else S.data.sales.push(s);commit();saleDetail(s.id);toast("Saved");
+  }
+  if(f.id==="setForm"){const st=S.data.settings;Object.assign(st,{company:v("stCompany"),companyId:v("stCid"),address:v("stAddr"),notifyEmail:v("stMail"),defaultRate:+v("stRate")||0,cookieDays:+v("stDays")||30,
+    invoiceEmail:v("stInvMail"),invoicePrefix:v("stPrefix")||"HYSA-AFF",vatRate:+v("stVat")||0,paymentDays:+v("stPay")||8,invoiceDay:Math.min(28,Math.max(1,+v("stDay")||1)),autoInvoice:f.querySelector("#stAuto").checked,
+    bankName:v("stBank"),bankReg:v("stReg"),bankAccount:v("stAcc"),iban:v("stIban"),bic:v("stBic"),id:"main",updatedAt:L.nowISO()});commit();toast("Settings saved")}
+});
+
+load().catch(()=>{});
+</script>
+</body>
+</html>

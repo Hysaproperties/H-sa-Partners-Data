@@ -1,0 +1,288 @@
+// Hýsa Partner Referrals — Cloudflare worker.
+// Pages in /public are static assets; this worker handles /go links, tracking, forms and the admin/job API.
+import { uid, randKey, nowISO, today, commission, agrLabel, defaultSettings, slugify, withParams, publicPartner, agreementActive, CATEGORIES, SYSTEMS } from "../public/assets/lib.js";
+
+const JSONH = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
+const json = (o, status = 200, extra = {}) => new Response(JSON.stringify(o), { status, headers: { ...JSONH, ...extra } });
+const bad = (msg, status = 400) => json({ error: msg }, status);
+const clean = (v, max = 500) => String(v ?? "").trim().slice(0, max);
+const emailOk = (e) => !e || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+
+/* ---------- storage ---------- */
+async function all(env, kind) {
+  const r = await env.DB.prepare("SELECT data FROM docs WHERE kind = ?").bind(kind).all();
+  return r.results.map((x) => JSON.parse(x.data));
+}
+async function one(env, kind, id) {
+  const r = await env.DB.prepare("SELECT data FROM docs WHERE kind = ? AND id = ?").bind(kind, id).first();
+  return r ? JSON.parse(r.data) : null;
+}
+function putStmt(env, kind, doc) {
+  doc.updatedAt = doc.updatedAt || nowISO();
+  return env.DB.prepare(
+    "INSERT INTO docs (kind, id, data, updated_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(kind, id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at WHERE excluded.updated_at >= docs.updated_at"
+  ).bind(kind, doc.id, JSON.stringify(doc), doc.updatedAt);
+}
+const put = (env, kind, doc) => putStmt(env, kind, doc).run();
+async function settings(env) { return { ...defaultSettings(), ...((await one(env, "settings", "main")) || {}) }; }
+async function partnerBy(env, field, value) { return (await all(env, "partner")).find((p) => p[field] === value && !p.deleted) || null; }
+
+/* ---------- admin session (signed cookie) ---------- */
+async function hmac(env, msg) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(`${env.ADMIN_PASSWORD}|${env.JOB_KEY}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(msg)));
+  return btoa(String.fromCharCode(...sig)).replace(/[+/=]/g, (c) => ({ "+": "-", "/": "_", "=": "" }[c]));
+}
+async function isAdmin(req, env) {
+  const c = (req.headers.get("Cookie") || "").match(/(?:^|;\s*)hs=([^;]+)/);
+  if (!c) return false;
+  const [exp, sig] = decodeURIComponent(c[1]).split(".");
+  return +exp > Date.now() && sig === (await hmac(env, exp));
+}
+function timingSafeEq(a, b) { if (a.length !== b.length) return false; let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i); return r === 0; }
+const isJob = (req, env) => !!env.JOB_KEY && timingSafeEq(req.headers.get("Authorization") || "", `Bearer ${env.JOB_KEY}`);
+
+/* ---------- sales helpers ---------- */
+function newSale(partner, f, source, extra = {}) {
+  const ts = nowISO();
+  const amount = Math.max(0, +f.amount || 0), persons = Math.max(1, +f.persons || 1);
+  return {
+    id: uid("s_"), partnerId: partner.id, date: clean(f.date, 10) || today(), amount, persons, currency: partner.currency || "DKK",
+    orderRef: clean(f.orderRef, 80), guestName: clean(f.guestName, 120), guestEmail: clean(f.guestEmail, 160), guestPhone: clean(f.guestPhone, 40),
+    notes: clean(f.notes, 500), source, method: ["partner", "guest"].includes(source) ? "in-store" : "online",
+    commission: commission(partner, amount, persons), rateLabel: agrLabel(partner), status: "open", review: "approved",
+    partnerReported: source === "partner", guestReceiptId: null, notifiedAt: source === "partner" ? ts : null,
+    createdAt: ts, updatedAt: ts, ...extra,
+  };
+}
+// A guest receipt and a partner report for the same purchase: same partner, amount within 2%, date within 3 days.
+function sameSale(a, b) {
+  const da = Math.abs(new Date(a.date) - new Date(b.date)) / 864e5;
+  const tol = Math.max(1, 0.02 * Math.max(+a.amount, +b.amount));
+  return a.partnerId === b.partnerId && da <= 3 && Math.abs(+a.amount - +b.amount) <= tol;
+}
+
+/* ---------- tracking script served to partner websites ---------- */
+function trackingScript(origin, days) {
+  return `/* Hýsa referral tracking */
+(function(){
+  var API=${JSON.stringify(origin + "/api/conversion")},K="hysa_click",D=${+days || 30};
+  var s=document.currentScript,P=s&&s.getAttribute("data-partner");
+  function save(v){try{localStorage.setItem(K,JSON.stringify({id:v,t:Date.now()}))}catch(e){}document.cookie=K+"="+encodeURIComponent(v)+";max-age="+(D*86400)+";path=/;SameSite=Lax"}
+  function get(){try{var o=JSON.parse(localStorage.getItem(K)||"null");if(o&&Date.now()-o.t<D*864e5)return o.id}catch(e){}var m=document.cookie.match(/(?:^|; )hysa_click=([^;]+)/);return m?decodeURIComponent(m[1]):null}
+  var m=location.search.match(/[?&]hysa_click=([^&#]+)/);if(m)save(decodeURIComponent(m[1]));
+  window.hysaConversion=function(o){o=o||{};var c=get();if(!c||!P)return false;
+    var body=JSON.stringify({partner:P,click:c,orderId:String(o.orderId||""),amount:+o.amount||0,currency:o.currency||"",persons:+o.persons||1});
+    if(navigator.sendBeacon&&navigator.sendBeacon(API,body))return true;
+    try{fetch(API,{method:"POST",body:body,keepalive:true,mode:"no-cors"})}catch(e){}return true};
+  var q=window.hysaQueue;if(q&&q.length)for(var i=0;i<q.length;i++)window.hysaConversion(q[i]);
+})();`;
+}
+
+/* ---------- router ---------- */
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    const path = url.pathname;
+    const method = req.method;
+    try {
+      // Click-through link: /go/<partner-slug>
+      if (path.startsWith("/go/")) {
+        const slug = decodeURIComponent(path.slice(4)).replace(/\/$/, "");
+        const p = await partnerBy(env, "slug", slug);
+        if (!p || !agreementActive(p) || !p.website) return Response.redirect(url.origin + "/", 302);
+        const click = randKey(12);
+        await env.DB.prepare("INSERT INTO clicks (id, partner_id, ts, ua, referer) VALUES (?, ?, ?, ?, ?)")
+          .bind(click, p.id, nowISO(), clean(req.headers.get("User-Agent"), 200), clean(req.headers.get("Referer"), 200)).run();
+        const target = withParams(p.website, { hysa_click: click, ref: "hysa", utm_source: "hysa", utm_medium: "guest_guide", utm_campaign: p.slug });
+        return new Response(null, { status: 302, headers: { Location: target, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer-when-downgrade" } });
+      }
+      if (path === "/t.js") {
+        const s = await settings(env);
+        return new Response(trackingScript(url.origin, s.cookieDays), { headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*" } });
+      }
+
+      if (path.startsWith("/api/")) {
+        if (method === "OPTIONS") return new Response(null, { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, GET", "Access-Control-Allow-Headers": "Content-Type" } });
+        return await api(req, env, url, path, method);
+      }
+      return env.ASSETS.fetch(req);
+    } catch (e) {
+      console.error(e);
+      return path.startsWith("/api/") ? bad("Something went wrong on our side. Please try again.", 500) : new Response("Error", { status: 500 });
+    }
+  },
+};
+
+async function body(req) { try { return JSON.parse(await req.text()); } catch { return {}; } }
+
+async function api(req, env, url, path, method) {
+  /* ---- public ---- */
+  if (path === "/api/public" && method === "GET") {
+    const s = await settings(env);
+    const partners = (await all(env, "partner")).filter((p) => agreementActive(p) && p.showOnGuide !== false).map(publicPartner)
+      .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+    return json({ company: s.company, partners, categories: CATEGORIES, systems: SYSTEMS, defaultRate: s.defaultRate });
+  }
+
+  // Conversion from the tracking script on a partner's website
+  if (path === "/api/conversion" && method === "POST") {
+    const b = await body(req);
+    const cors = { "Access-Control-Allow-Origin": "*" };
+    const p = await partnerBy(env, "trackKey", clean(b.partner, 60));
+    if (!p) return json({ ok: false }, 200, cors);
+    const click = await env.DB.prepare("SELECT id, ts FROM clicks WHERE id = ? AND partner_id = ?").bind(clean(b.click, 40), p.id).first();
+    const s = await settings(env);
+    if (!click || Date.now() - new Date(click.ts) > (+s.cookieDays || 30) * 864e5) return json({ ok: false }, 200, cors);
+    const orderRef = clean(b.orderId, 80);
+    const extId = `script:${p.id}:${orderRef || click.id}`;
+    if ((await all(env, "sale")).some((x) => x.extId === extId && !x.deleted)) return json({ ok: true, duplicate: true }, 200, cors);
+    const sale = newSale(p, { amount: b.amount, persons: b.persons, orderRef, date: today() }, "script", { extId, clickId: click.id, matchedBy: "Hýsa link" });
+    if (b.currency) sale.currency = clean(b.currency, 3).toUpperCase();
+    p.lastConversionAt = nowISO(); p.updatedAt = nowISO();
+    await env.DB.batch([putStmt(env, "sale", sale), putStmt(env, "partner", p)]);
+    return json({ ok: true }, 200, cors);
+  }
+
+  // Partner signs up
+  if (path === "/api/signup" && method === "POST") {
+    const b = await body(req);
+    const s = await settings(env);
+    const name = clean(b.name, 120), email = clean(b.email, 160);
+    if (!name || !email) return bad("Please fill in the business name and your email.");
+    if (!emailOk(email) || !emailOk(clean(b.invoiceEmail, 160))) return bad("Please check the email address.");
+    if (!b.acceptTerms) return bad("Please accept the partner terms.");
+    const existing = await all(env, "partner");
+    let slug = slugify(name), n = 2;
+    while (existing.some((p) => p.slug === slug)) slug = `${slugify(name)}-${n++}`;
+    const system = SYSTEMS[b.system] ? b.system : "none";
+    const ts = nowISO();
+    const p = {
+      id: uid("p_"), slug, status: "pending", active: true, showOnGuide: true, autoInvoice: true,
+      name, category: CATEGORIES.includes(b.category) ? b.category : "Other", currency: "DKK",
+      website: clean(b.website, 300), phone: clean(b.phone, 40), publicEmail: clean(b.publicEmail, 160), address: clean(b.address, 200), hours: clean(b.hours, 120),
+      description: clean(b.description, 600), discountCode: clean(b.discountCode, 40), discountText: clean(b.discountText, 120),
+      contactName: clean(b.contactName, 120), email, invoiceEmail: clean(b.invoiceEmail, 160), companyId: clean(b.companyId, 40),
+      agreement: { type: "percent", rate: +s.defaultRate || 10, validFrom: today(), validTo: "", notes: "" },
+      integration: { type: system, shop: clean(b.shop, 200), token: clean(b.token, 200), url: clean(b.shopUrl, 300), key: clean(b.key, 200), secret: clean(b.secret, 200) },
+      trackKey: randKey(20), portalKey: randKey(28), signupAt: ts, adminNotifiedAt: null, welcomeSentAt: null, createdAt: ts, updatedAt: ts,
+    };
+    await put(env, "partner", p);
+    return json({ ok: true, portalKey: p.portalKey });
+  }
+
+  // Guest uploads a receipt for an in-person purchase
+  if (path === "/api/receipt" && method === "POST") {
+    const b = await body(req);
+    const p = await one(env, "partner", clean(b.partnerId, 60));
+    if (!p || p.status !== "approved") return bad("Please choose where you bought something.");
+    const amount = +b.amount;
+    if (!(amount > 0)) return bad("Please enter the amount you paid.");
+    if (!clean(b.guestName) || !emailOk(clean(b.guestEmail))) return bad("Please enter your name and a valid email.");
+    const img = String(b.image || "");
+    if (!/^data:image\/(jpeg|png|webp);base64,/.test(img) || img.length > 1_400_000) return bad("Please add a photo of your receipt (max 1 MB).");
+    const ts = nowISO(), fileId = uid("f_");
+    await env.DB.prepare("INSERT INTO files (id, mime, data, created_at) VALUES (?, ?, ?, ?)").bind(fileId, img.slice(5, img.indexOf(";")), img, ts).run();
+    const f = { date: clean(b.date, 10) || today(), amount, guestName: b.guestName, guestEmail: b.guestEmail, guestPhone: b.guestPhone, orderRef: b.orderRef, notes: b.stay ? `Stay: ${clean(b.stay, 120)}` : "" };
+    const sales = await all(env, "sale");
+    const match = sales.find((x) => !x.deleted && x.source === "partner" && !x.guestReceiptId && sameSale(x, { ...f, partnerId: p.id }));
+    if (match) {
+      Object.assign(match, { guestReceiptId: fileId, guestConfirmed: true, guestName: match.guestName || clean(b.guestName, 120), guestEmail: match.guestEmail || clean(b.guestEmail, 160), guestPhone: match.guestPhone || clean(b.guestPhone, 40), updatedAt: ts });
+      await put(env, "sale", match);
+    } else {
+      await put(env, "sale", newSale(p, f, "guest", { review: "pending", guestReceiptId: fileId, guestConfirmed: true }));
+    }
+    return json({ ok: true });
+  }
+
+  /* ---- partner portal (secret link) ---- */
+  const pm = path.match(/^\/api\/partner\/([A-Za-z0-9]{20,40})(\/[a-z-]+)?$/);
+  if (pm) {
+    const p = await partnerBy(env, "portalKey", pm[1]);
+    if (!p) return bad("This partner link is not valid.", 404);
+    const action = pm[2] || "";
+    if (action === "" && method === "GET") {
+      const [sales, invoices, s] = await Promise.all([all(env, "sale"), all(env, "invoice"), settings(env)]);
+      const clicks = await env.DB.prepare("SELECT COUNT(*) AS n, SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS m FROM clicks WHERE partner_id = ?").bind(new Date(Date.now() - 30 * 864e5).toISOString(), p.id).first();
+      const { token, secret, key, ...integ } = p.integration || {};
+      return json({
+        company: s.company, origin: url.origin, cookieDays: s.cookieDays, paymentDays: s.paymentDays, vatRate: s.vatRate,
+        partner: { ...publicPartner(p), status: p.status, contactName: p.contactName, contactEmail: p.email, invoiceEmail: p.invoiceEmail, companyId: p.companyId, agreement: p.agreement, agreementLabel: agrLabel(p), trackKey: p.trackKey, integration: { ...integ, connected: !!(token || key) } },
+        clicks: { total: clicks?.n || 0, last30: clicks?.m || 0 },
+        sales: sales.filter((x) => x.partnerId === p.id && !x.deleted && x.review !== "rejected").map(({ guestEmail, guestPhone, ...x }) => x).sort((a, b) => (b.date || "").localeCompare(a.date || "")),
+        invoices: invoices.filter((x) => x.partnerId === p.id && !x.deleted).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")),
+      });
+    }
+    if (action === "/sale" && method === "POST") {
+      if (p.status !== "approved") return bad("Your partnership is not approved yet.");
+      const b = await body(req);
+      if (!(+b.amount > 0)) return bad("Please enter the amount.");
+      const f = { date: clean(b.date, 10) || today(), amount: +b.amount, persons: b.persons, orderRef: b.orderRef, guestName: b.guestName, notes: b.notes };
+      const sales = await all(env, "sale");
+      const pending = sales.find((x) => !x.deleted && x.source === "guest" && x.review === "pending" && sameSale(x, { ...f, partnerId: p.id }));
+      if (pending) {
+        Object.assign(pending, { review: "approved", partnerReported: true, orderRef: pending.orderRef || clean(b.orderRef, 80), notifiedAt: nowISO(), updatedAt: nowISO() });
+        await put(env, "sale", pending);
+        return json({ ok: true, matchedGuestReceipt: true });
+      }
+      await put(env, "sale", newSale(p, f, "partner"));
+      return json({ ok: true });
+    }
+    if (action === "/update" && method === "POST") {
+      const b = await body(req);
+      for (const k of ["phone", "publicEmail", "address", "hours", "description", "website", "contactName", "invoiceEmail", "discountCode", "discountText"]) if (k in b) p[k] = clean(b[k], k === "description" ? 600 : 300);
+      if (b.integration) {
+        const i = b.integration, cur = p.integration || {};
+        p.integration = { ...cur, type: SYSTEMS[i.type] ? i.type : cur.type, shop: clean(i.shop ?? cur.shop, 200), url: clean(i.url ?? cur.url, 300),
+          token: i.token ? clean(i.token, 200) : cur.token, key: i.key ? clean(i.key, 200) : cur.key, secret: i.secret ? clean(i.secret, 200) : cur.secret, lastError: "" };
+      }
+      p.updatedAt = nowISO();
+      await put(env, "partner", p);
+      return json({ ok: true });
+    }
+    return bad("Not found", 404);
+  }
+
+  /* ---- admin ---- */
+  if (path === "/api/admin/login" && method === "POST") {
+    const b = await body(req);
+    if (!env.ADMIN_PASSWORD || !timingSafeEq(String(b.password || ""), env.ADMIN_PASSWORD)) { await new Promise((r) => setTimeout(r, 600)); return bad("Wrong password.", 401); }
+    const exp = String(Date.now() + 30 * 864e5);
+    return json({ ok: true }, 200, { "Set-Cookie": `hs=${encodeURIComponent(exp + "." + (await hmac(env, exp)))}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${30 * 86400}` });
+  }
+  if (path === "/api/admin/logout") return json({ ok: true }, 200, { "Set-Cookie": "hs=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0" });
+
+  const admin = path.startsWith("/api/admin/") && (await isAdmin(req, env));
+  const job = path.startsWith("/api/job/") && isJob(req, env);
+  if (path.startsWith("/api/admin/") && !admin) return bad("Please log in.", 401);
+  if (path.startsWith("/api/job/") && !job) return bad("Unauthorized", 401);
+
+  if ((path === "/api/admin/data" || path === "/api/job/data") && method === "GET") {
+    const [partners, sales, invoices, s] = await Promise.all([all(env, "partner"), all(env, "sale"), all(env, "invoice"), settings(env)]);
+    const since = new Date(Date.now() - 30 * 864e5).toISOString();
+    const cs = await env.DB.prepare("SELECT partner_id AS p, COUNT(*) AS n, SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS m FROM clicks GROUP BY partner_id").bind(since).all();
+    const clickStats = Object.fromEntries(cs.results.map((r) => [r.p, { total: r.n, last30: r.m }]));
+    const sync = (await one(env, "meta", "sync")) || { lastRun: null, log: [] };
+    return json({ origin: url.origin, settings: s, partners, sales, invoices, clickStats, sync });
+  }
+  if ((path === "/api/admin/upsert" || path === "/api/job/upsert") && method === "POST") {
+    const b = await body(req);
+    const docs = Array.isArray(b.docs) ? b.docs.slice(0, 500) : [];
+    const kinds = ["partner", "sale", "invoice", "settings", "meta"];
+    const stmts = [];
+    for (const d of docs) {
+      if (!kinds.includes(d.kind) || !d.doc?.id) continue;
+      if (d.kind === "partner") { d.doc.slug = d.doc.slug || slugify(d.doc.name); d.doc.trackKey = d.doc.trackKey || randKey(20); d.doc.portalKey = d.doc.portalKey || randKey(28); }
+      stmts.push(putStmt(env, d.kind, d.doc));
+    }
+    if (stmts.length) await env.DB.batch(stmts);
+    return json({ ok: true, saved: stmts.length });
+  }
+  if (path.startsWith("/api/admin/file/") && method === "GET") {
+    const f = await env.DB.prepare("SELECT mime, data FROM files WHERE id = ?").bind(path.split("/").pop()).first();
+    if (!f) return bad("Not found", 404);
+    const bin = Uint8Array.from(atob(f.data.slice(f.data.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+    return new Response(bin, { headers: { "Content-Type": f.mime, "Cache-Control": "private, max-age=86400" } });
+  }
+  return bad("Not found", 404);
+}

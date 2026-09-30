@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Hýsa Guest Guide</title>
+<meta name="description" content="Local favourites and guest offers for Hýsa guests in the Faroe Islands.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@600;700;800&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+.filters{display:flex;gap:8px;flex-wrap:wrap;padding-block:8px 20px;position:sticky;top:0;background:var(--bg);z-index:5}
+.filters button{appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--fg);font:600 .88rem var(--f-body);padding:7px 14px;border-radius:999px;cursor:pointer}
+.filters button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+section.cat{display:flex;flex-direction:column;gap:12px;margin-bottom:28px}
+section.cat>h2{font:700 .78rem var(--f-body);text-transform:uppercase;letter-spacing:.1em;color:var(--muted);padding-bottom:6px;border-bottom:1px solid var(--line)}
+.p{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:14px 22px;align-items:start}
+.p h3{font:700 1.2rem var(--f-display);margin:0 0 4px}
+.p .desc{margin:0}
+.contact{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 14px;margin:12px 0 0;font-size:.9rem}
+.contact dt{color:var(--muted);font-size:.74rem;text-transform:uppercase;letter-spacing:.05em;padding-top:3px}
+.contact dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.contact a{text-decoration:none}.contact a:hover{text-decoration:underline}
+.side{display:flex;flex-direction:column;gap:8px}
+.offer{background:var(--money-soft);color:var(--money);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
+.offer small{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.offer .r{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.offer b{font:600 1.05rem var(--f-mono);letter-spacing:.05em}
+.offer button{appearance:none;border:1px solid currentColor;background:none;color:inherit;font:600 .76rem var(--f-body);padding:3px 9px;border-radius:5px;cursor:pointer}
+.receipt{background:var(--accent-soft);border-radius:10px;padding:18px;display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:24px}
+.receipt p{margin:4px 0 0;max-width:56ch}
+@media (max-width:640px){.p{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="site-h">
+    <span class="mark">Hýsa · Guest guide</span>
+    <h1>Local favourites for your stay</h1>
+    <p class="lead">Restaurants, car rental, tours and places we recommend to our guests. Book through the buttons below and you are all set.</p>
+  </header>
+  <nav class="filters" id="filters" aria-label="Categories"></nav>
+  <main id="list"><p class="muted">Loading the guide…</p></main>
+  <div class="receipt">
+    <div><h3>Bought something in person?</h3><p class="muted">If you paid at a place from this guide, send us a photo of your receipt. It takes a minute and helps us keep recommending the places you like.</p></div>
+    <a class="btn pri" href="/receipt.html">Send a receipt</a>
+  </div>
+  <footer class="site"><span>Recommended by Hýsa. Offers are provided by each business and may change.</span><a href="/join.html">Local business? Become a partner</a></footer>
+</div>
+<script>
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let partners=[],cat="All";
+function render(){
+  const cats=["All",...new Set(partners.map(p=>p.category))];
+  document.getElementById("filters").innerHTML=cats.length>2?cats.map(c=>`<button aria-pressed="${c===cat}" data-cat="${esc(c)}">${esc(c)}</button>`).join(""):"";
+  const list=partners.filter(p=>cat==="All"||p.category===cat);
+  if(!list.length){document.getElementById("list").innerHTML='<p class="muted">No recommendations yet. Please check back soon.</p>';return}
+  const g={};list.forEach(p=>(g[p.category]=g[p.category]||[]).push(p));
+  document.getElementById("list").innerHTML=Object.entries(g).map(([c,ps])=>`<section class="cat"><h2>${esc(c)}</h2>${ps.map(p=>`
+  <article class="p" id="${esc(p.slug)}"><div>
+    <h3>${esc(p.name)}</h3>${p.description?`<p class="desc">${esc(p.description)}</p>`:""}
+    <dl class="contact">
+      ${p.website?`<dt>Website</dt><dd><a href="${p.go?esc(p.go):"#"}" target="_blank" rel="noopener">${esc(p.website)}</a></dd>`:""}
+      ${p.phone?`<dt>Phone</dt><dd><a href="tel:${esc(p.phone.replace(/\s+/g,""))}">${esc(p.phone)}</a></dd>`:""}
+      ${p.email?`<dt>Email</dt><dd><a href="mailto:${esc(p.email)}">${esc(p.email)}</a></dd>`:""}
+      ${p.address?`<dt>Address</dt><dd><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.name+", "+p.address)}" target="_blank" rel="noopener">${esc(p.address)}</a></dd>`:""}
+      ${p.hours?`<dt>Opening hours</dt><dd>${esc(p.hours)}</dd>`:""}
+    </dl>
+  </div><div class="side">
+    ${p.discountText||p.discountCode?`<div class="offer"><small>Hýsa guest offer</small>${p.discountText?`<span>${esc(p.discountText)}</span>`:""}${p.discountCode?`<div class="r"><b>${esc(p.discountCode)}</b><button data-copy="${esc(p.discountCode)}">Copy code</button></div>`:""}</div>`:""}
+    ${p.go?`<a class="btn pri lg" href="${esc(p.go)}" target="_blank" rel="noopener">Visit &amp; book</a>`:p.phone?`<a class="btn lg" href="tel:${esc(p.phone.replace(/\s+/g,""))}">Call to book</a>`:""}
+  </div></article>`).join("")}</section>`).join("");
+}
+document.addEventListener("click",async e=>{const b=e.target.closest("button");if(!b)return;
+  if(b.dataset.cat){cat=b.dataset.cat;render()}
+  if(b.dataset.copy){try{await navigator.clipboard.writeText(b.dataset.copy);b.textContent="Copied"}catch(_){b.textContent=b.dataset.copy}setTimeout(()=>b.textContent="Copy code",1600)}});
+fetch("/api/public").then(r=>r.json()).then(j=>{partners=j.partners||[];render()}).catch(()=>{document.getElementById("list").innerHTML='<p class="muted">The guide could not load. Please try again in a moment.</p>'});
+</script>
+</body>
+</html>

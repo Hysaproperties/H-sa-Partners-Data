@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Become a Hýsa Partner</title>
+<meta name="description" content="Get recommended to Hýsa guests in the Faroe Islands.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@600;700;800&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+.sys{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.sys label{border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;gap:10px;align-items:flex-start;cursor:pointer;background:var(--surface);font-size:.92rem}
+.sys label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.sys small{display:block;color:var(--muted);font-size:.8rem}
+ol.howto{margin:0;padding-left:20px;font-size:.9rem;display:flex;flex-direction:column;gap:4px}
+@media (max-width:560px){.sys{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap" style="max-width:760px">
+  <header class="site-h"><span class="mark">Hýsa · Partners</span><h1>Get recommended to our guests</h1>
+    <p class="lead">Hýsa hosts guests in holiday apartments across the Faroe Islands. Join our guest guide and we send guests your way. You pay a commission only on what they actually buy.</p></header>
+  <div class="steps" style="margin-bottom:22px">
+    <div class="step"><b>Sign up</b>Tell us about your business. It takes about five minutes.</div>
+    <div class="step"><b>Get approved</b>We confirm the terms and add you to the guest guide.</div>
+    <div class="step"><b>Receive guests</b>Guests book through your Hýsa link. We invoice the commission once a month.</div>
+  </div>
+  <form id="f" class="panel panel-b form" novalidate>
+    <div class="sect" style="border:0;padding:0;margin:0"><h3>Your business</h3></div>
+    <label class="f full">Business name<input id="name" required autocomplete="organization"></label>
+    <label class="f">Category<select id="category"></select></label>
+    <label class="f">Company no. / V-tal <span class="hint">for invoices</span><input id="companyId"></label>
+    <label class="f full">Website or booking page<input id="website" placeholder="https://…" inputmode="url"></label>
+    <label class="f">Phone <span class="hint">shown to guests</span><input id="phone" type="tel" placeholder="+298 …"></label>
+    <label class="f">Email for guests <span class="hint">shown to guests</span><input id="publicEmail" type="email"></label>
+    <label class="f">Address<input id="address"></label>
+    <label class="f">Opening hours<input id="hours" placeholder="Mon–Sat 12–22"></label>
+    <label class="f full">Short description for guests (English)<textarea id="description" placeholder="What you offer and why guests will love it."></textarea></label>
+    <label class="f">Offer for Hýsa guests <span class="hint">optional</span><input id="discountText" placeholder="e.g. 10% off, free dessert"></label>
+    <label class="f">Discount code <span class="hint">optional</span><input id="discountCode" class="mono" placeholder="HYSA10"></label>
+
+    <div class="sect"><h3>Contact and invoicing</h3></div>
+    <label class="f">Contact person<input id="contactName" autocomplete="name"></label>
+    <label class="f">Your email<input id="email" type="email" required autocomplete="email"></label>
+    <label class="f full">Email for invoices <span class="hint">if different</span><input id="invoiceEmail" type="email"></label>
+
+    <div class="sect"><h3>How do guests book with you?</h3><span class="sm">This is how we see which bookings came from Hýsa guests, so you only pay for those.</span></div>
+    <div class="full sys" id="sys"></div>
+    <div class="full" id="sysHelp"></div>
+
+    <div class="sect"><h3>Terms</h3></div>
+    <div class="full notice" id="terms"></div>
+    <label class="check full"><input id="acceptTerms" type="checkbox"> I accept the partner terms on behalf of the business.</label>
+    <div class="full" id="msg"></div>
+    <div class="full"><button class="btn pri lg" type="submit">Send sign-up</button></div>
+  </form>
+  <div id="done" class="panel panel-b stack" hidden></div>
+  <footer class="site"><span>Hýsa Sp/f · Heygsvegur 33, Tórshavn · hysa@hysa.fo</span><a href="/">See the guest guide</a></footer>
+</div>
+<script>
+const $=s=>document.querySelector(s);const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const SYS=[
+ ["shopify","Shopify","Webshop on Shopify"],
+ ["woocommerce","WooCommerce","Webshop on WordPress"],
+ ["script","Other website or booking system","We give you a short tracking code"],
+ ["none","In person only","Restaurant, shop or phone bookings"]];
+const HELP={
+ shopify:`<div class="form" style="grid-template-columns:1fr 1fr"><div class="full"><ol class="howto">
+   <li>In Shopify admin go to <b>Settings → Apps and sales channels → Develop apps → Create an app</b>, name it "Hýsa".</li>
+   <li>Under <b>Configuration → Admin API scopes</b> tick only <b>read_orders</b>. Save and click <b>Install app</b>.</li>
+   <li>Copy the <b>Admin API access token</b> (starts with shpat_) and paste it below.</li></ol>
+   <p class="sm">This access can only read orders. It cannot change anything, and you can remove it at any time.</p></div>
+   <label class="f">Shop address<input id="shop" class="mono" placeholder="yourshop.myshopify.com"></label>
+   <label class="f">Admin API access token<input id="token" class="mono" placeholder="shpat_…" autocomplete="off"></label></div>`,
+ woocommerce:`<div class="form" style="grid-template-columns:1fr 1fr"><div class="full"><ol class="howto">
+   <li>In WordPress go to <b>WooCommerce → Settings → Advanced → REST API → Add key</b>.</li>
+   <li>Description "Hýsa", Permissions <b>Read</b>. Click <b>Generate API key</b>.</li>
+   <li>Paste the Consumer key and Consumer secret below. Keep <b>Order attribution</b> switched on (WooCommerce → Settings → Advanced → Features).</li></ol>
+   <p class="sm">This key can only read orders and can be revoked at any time.</p></div>
+   <label class="f full">Shop URL<input id="shopUrl" class="mono" placeholder="https://yourshop.fo"></label>
+   <label class="f">Consumer key<input id="key" class="mono" placeholder="ck_…" autocomplete="off"></label>
+   <label class="f">Consumer secret<input id="secret" class="mono" placeholder="cs_…" autocomplete="off"></label></div>`,
+ script:`<div class="notice">After sign-up you get a short piece of code for your website and your order confirmation page. Your web developer can add it in about ten minutes. It only reports bookings made by guests who arrived through your Hýsa link.</div>`,
+ none:`<div class="notice">When a Hýsa guest pays in person, you register the purchase on your partner page (date, amount, receipt number). It takes a few seconds. Guests can also send us their receipt.</div>`};
+fetch("/api/public").then(r=>r.json()).then(j=>{
+  $("#category").innerHTML=(j.categories||["Other"]).map(c=>`<option>${esc(c)}</option>`).join("");
+  $("#terms").innerHTML=`Commission: <b>${+j.defaultRate||10}% of what Hýsa guests spend</b> (excl. VAT), unless we agree otherwise when we approve you. We invoice once a month with 8 days payment terms. Purchases count when the guest came through your Hýsa link or used a Hýsa code, and in-person purchases you register or that a guest documents with a receipt. You can end the partnership at any time.`;
+});
+$("#sys").innerHTML=SYS.map(([k,t,d],i)=>`<label><input type="radio" name="system" value="${k}" ${i===3?"checked":""}><span><b>${t}</b><small>${d}</small></span></label>`).join("");
+const showHelp=()=>{$("#sysHelp").innerHTML=HELP[document.querySelector('input[name=system]:checked').value]};showHelp();
+$("#sys").addEventListener("change",showHelp);
+function msg(t,k=""){$("#msg").innerHTML=t?`<div class="notice ${k}">${t}</div>`:""}
+$("#f").onsubmit=async e=>{e.preventDefault();const v=id=>($("#"+id)?.value||"").trim();
+  const data={name:v("name"),category:v("category"),companyId:v("companyId"),website:v("website"),phone:v("phone"),publicEmail:v("publicEmail"),address:v("address"),hours:v("hours"),description:v("description"),discountText:v("discountText"),discountCode:v("discountCode"),contactName:v("contactName"),email:v("email"),invoiceEmail:v("invoiceEmail"),
+    system:document.querySelector('input[name=system]:checked').value,shop:v("shop"),token:v("token"),shopUrl:v("shopUrl"),key:v("key"),secret:v("secret"),acceptTerms:$("#acceptTerms").checked};
+  if(!data.name||!data.email){msg("Please fill in the business name and your email.","bad");return}
+  if(!data.acceptTerms){msg("Please accept the partner terms.","bad");return}
+  const b=e.target.querySelector("button[type=submit]");b.disabled=true;b.textContent="Sending…";
+  try{const r=await fetch("/api/signup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw new Error(j.error||"Could not send");
+    const portal=`${location.origin}/partner.html#${j.portalKey}`;
+    $("#f").hidden=true;$("#done").hidden=false;
+    $("#done").innerHTML=`<h2>Thank you, ${esc(data.name)}</h2><p style="margin:0">We have received your sign-up and will review it shortly. You get an email when you are approved.</p>
+      <div><div class="eyebrow">Your partner page</div><p class="sm" style="margin:4px 0 8px">Save this link. It is your private page for seeing Hýsa guests, registering in-person purchases and getting your tracking code.</p>
+      <pre class="code">${esc(portal)}</pre></div><div class="row"><a class="btn pri" href="${esc(portal)}">Open partner page</a></div>`;
+  }catch(err){msg(err.message,"bad");b.disabled=false;b.textContent="Send sign-up"}};
+</script>
+</body>
+</html>
