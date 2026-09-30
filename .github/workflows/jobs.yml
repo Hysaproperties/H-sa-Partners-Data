@@ -1,0 +1,43 @@
+name: Hourly orders, emails and invoices
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: jobs
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: hysa-partners-v2
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-save nodemailer@6 pdfkit@0.15
+
+      - name: Find the site address
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SITE_URL: ${{ secrets.SITE_URL }}
+        run: |
+          if [ -n "$SITE_URL" ]; then echo "WORKER_URL=$SITE_URL" >> $GITHUB_ENV; exit 0; fi
+          SUB=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).result?.subdomain||"")')
+          echo "WORKER_URL=https://hysa-partners.$SUB.workers.dev" >> $GITHUB_ENV
+
+      - run: node scripts/jobs.mjs
+        env:
+          JOB_KEY: ${{ secrets.JOB_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
