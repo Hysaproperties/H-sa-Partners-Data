@@ -42,8 +42,9 @@ $("#date").value=new Date().toISOString().slice(0,10);
 let PS=[];
 function cbInfo(){const p=PS.find(x=>x.id===$("#partnerId").value),a=+$("#amount").value||0,el=$("#cbInfo");
   if(!p||p.benefit!=="cashback"||!p.cashback){el.hidden=true;return}
-  el.hidden=false;el.innerHTML=`<b>${p.cashback}% cashback at ${p.name.replace(/</g,"&lt;")}.</b> ${a>0?`You get <b>${(Math.round(a*p.cashback)/100).toFixed(2)} kr</b> back`:"You get the money back"} on the card you paid your Hýsa stay with, usually within 1–3 weeks. Use the same email as your Hýsa booking.`}
-fetch("/api/public").then(r=>r.json()).then(j=>{PS=j.partners||[];$("#partnerId").innerHTML+='' + PS.map(p=>`<option value="${p.id}">${p.name.replace(/</g,"&lt;")}${p.benefit==="cashback"&&p.cashback?` · ${p.cashback}% cashback`:""}</option>`).join("");
+  const back=p.kind==="fixed"?Math.min(p.cashback,a||p.cashback):Math.round(a*p.cashback)/100;
+  el.hidden=false;el.innerHTML=`<b>${p.benefitAmount} cashback at ${p.name.replace(/</g,"&lt;")}.</b> ${a>0||p.kind==="fixed"?`You get <b>${back.toFixed(2)} kr</b> back`:"You get the money back"} on the card you paid your Hýsa stay with, usually within 1–3 weeks. Use the same email as your Hýsa booking.`}
+fetch("/api/public").then(r=>r.json()).then(j=>{PS=j.partners||[];$("#partnerId").innerHTML+='' + PS.map(p=>`<option value="${p.id}">${p.name.replace(/</g,"&lt;")}${p.benefit==="cashback"&&p.cashback?` · ${p.benefitAmount} cashback`:""}</option>`).join("");
   const pre=new URLSearchParams(location.search).get("p");if(pre){const p=PS.find(x=>x.slug===pre);if(p)$("#partnerId").value=p.id}cbInfo()});
 $("#partnerId").addEventListener("change",cbInfo);$("#amount").addEventListener("input",cbInfo);
 const pick=()=>$("#file").click();

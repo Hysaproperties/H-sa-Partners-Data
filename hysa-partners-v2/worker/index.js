@@ -1,6 +1,6 @@
 // Hýsa Partner Referrals — Cloudflare worker.
 // Pages in /public are static assets; this worker handles /go links, tracking, forms and the admin/job API.
-import { uid, randKey, nowISO, today, commission, agrLabel, defaultSettings, slugify, withParams, publicPartner, agreementActive, CATEGORIES, SYSTEMS, diffChanges, logChanges, partnerHealth, benefit, benefitLabel, cashbackAmount, cashbackState, AGR, exVat, saleCommission, codeFor, guestOfferText, voucherEmail, cashbackAckEmail, signupNoticeEmail, welcomeEmail } from "../public/assets/lib.js";
+import { uid, randKey, nowISO, today, commission, agrLabel, defaultSettings, slugify, withParams, publicPartner, agreementActive, CATEGORIES, SYSTEMS, diffChanges, logChanges, partnerHealth, benefit, benefitLabel, cashbackAmount, cashbackState, AGR, exVat, saleCommission, codeFor, guestOfferText, benefitAmount, voucherEmail, cashbackAckEmail, signupNoticeEmail, welcomeEmail } from "../public/assets/lib.js";
 import { WorkerMailer } from "./mailer.js";
 
 const JSONH = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
@@ -65,16 +65,18 @@ function newSale(partner, f, source, extra = {}) {
   const ts = nowISO();
   const amount = Math.max(0, +f.amount || 0), persons = Math.max(1, +f.persons || 1);
   const vatIncluded = ["partner", "guest", "voucher", "script"].includes(source);
-  // A Hýsa guest discount given at the till: the amount is what the guest paid after the discount
-  const d = Math.min(90, Math.max(0, +extra.discountRate || 0)) / 100; delete extra.discountRate;
-  const full = d ? amount / (1 - d) : amount;
+  // A Hýsa guest discount given at the till: the amount is what the guest paid after the discount (% or a fixed kr amount)
+  const disc = extra.discount || null; delete extra.discount;
+  const pct = disc && disc.kind !== "fixed" ? Math.min(90, Math.max(0, +disc.rate || 0)) / 100 : 0, fixedOff = disc && disc.kind === "fixed" ? Math.max(0, +disc.rate || 0) : 0;
+  const d = pct || fixedOff;
+  const full = pct ? amount / (1 - pct) : amount + fixedOff;
   const amountExVat = Math.round((vatIncluded ? exVat(full, VAT) : full) * 100) / 100;
   const c = saleCommission(partner, { baseExVat: amountExVat, persons, discountExVat: d ? (vatIncluded ? exVat(full - amount, VAT) : full - amount) : 0 });
   return {
     id: uid("s_"), partnerId: partner.id, date: clean(f.date, 10) || today(), amount, persons, currency: partner.currency || "DKK",
     orderRef: clean(f.orderRef, 80), guestName: clean(f.guestName, 120), guestEmail: clean(f.guestEmail, 160), guestPhone: clean(f.guestPhone, 40),
     notes: clean(f.notes, 500), source, method: ["partner", "guest"].includes(source) ? "in-store" : "online",
-    vatIncluded, amountExVat, ...(d ? { fullPrice: Math.round(full * 100) / 100, discountRate: d * 100 } : {}), kickback: c.kickback, guestDiscount: c.guestDiscount, commission: c.commission, rateLabel: agrLabel(partner), status: "open", review: "approved",
+    vatIncluded, amountExVat, ...(d ? { fullPrice: Math.round(full * 100) / 100, discountGiven: Math.round((full - amount) * 100) / 100 } : {}), kickback: c.kickback, guestDiscount: c.guestDiscount, commission: c.commission, rateLabel: agrLabel(partner), status: "open", review: "approved",
     partnerReported: source === "partner", guestReceiptId: null, notifiedAt: source === "partner" ? ts : null,
     createdAt: ts, updatedAt: ts, ...extra,
   };
@@ -309,7 +311,7 @@ async function api(req, env, url, path, method, ctx) {
     const email = clean(b.guestEmail, 160).toLowerCase();
     if (sales.some((x) => !x.deleted && x.guestReceiptId && (x.guestEmail || "").toLowerCase() === email && sameSale(x, { ...f, partnerId: p.id }))) return bad("We already have this receipt. Thank you!");
     const cb = cashbackAmount(p, amount);
-    const cashback = cb > 0 ? { rate: benefit(p).rate, amount: cb, currency: p.currency || "DKK", createdAt: ts } : null;
+    const cashback = cb > 0 ? { rate: benefit(p).rate, kind: benefit(p).kind, amount: cb, currency: p.currency || "DKK", createdAt: ts } : null;
     const match = sales.find((x) => !x.deleted && ["partner", "voucher"].includes(x.source) && !x.guestReceiptId && sameSale(x, { ...f, partnerId: p.id }));
     if (match) {
       Object.assign(match, { guestReceiptId: fileId, guestConfirmed: true, guestName: match.guestName || clean(b.guestName, 120), guestEmail: match.guestEmail || email, guestPhone: match.guestPhone || clean(b.guestPhone, 40), updatedAt: ts });
@@ -338,7 +340,7 @@ async function api(req, env, url, path, method, ctx) {
         company: s.company, origin: url.origin, cookieDays: s.cookieDays, paymentDays: s.paymentDays, vatRate: s.vatRate,
         partner: { ...publicPartner(p), discountText: p.discountText || "", discountCode: p.discountCode || "", status: p.status, contactName: p.contactName, contactEmail: p.email, invoiceEmail: p.invoiceEmail, companyId: p.companyId, agreement: p.agreement, agreementLabel: agrLabel(p), trackKey: p.trackKey, integration: { ...integ, connected: !!(token || key) } },
         todo: partnerHealth(p, { sales, invoices }).issues.filter((x) => x.who === "partner").map((x) => x.text),
-        deal: { pays: agrLabel(p), guests: benefitLabel(p), mode: benefit(p).mode, rate: benefit(p).rate, code: codeFor(p), frequency: p.invoiceFrequency || s.invoiceFrequency || "weekly", reviewDays: +s.receiptReviewDays || 3 },
+        deal: { pays: agrLabel(p), guests: benefitLabel(p), mode: benefit(p).mode, rate: benefit(p).rate, kind: benefit(p).kind, amount: benefitAmount(p), code: codeFor(p), frequency: p.invoiceFrequency || s.invoiceFrequency || "weekly", reviewDays: +s.receiptReviewDays || 3 },
         clicks: { total: clicks?.n || 0, last30: clicks?.m || 0 },
         sales: sales.filter((x) => x.partnerId === p.id && !x.deleted && x.review !== "rejected").map(({ guestEmail, guestPhone, ...x }) => x).sort((a, b) => (b.date || "").localeCompare(a.date || "")),
         invoices: invoices.filter((x) => x.partnerId === p.id && !x.deleted).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")),
@@ -362,7 +364,7 @@ async function api(req, env, url, path, method, ctx) {
       const st = voucherState(v, s);
       if (!st.ok) return bad(st.reason);
       if (!(+b.amount > 0)) return bad("Please enter the amount the guest pays.");
-      const sale = newSale(p, { date: today(), amount: +b.amount, persons: b.persons, orderRef: b.orderRef, guestName: v.guestName, guestEmail: v.guestEmail, guestPhone: v.guestPhone }, "voucher", { voucherId: v.id, partnerReported: true, notifiedAt: nowISO(), discountRate: benefit(p).mode === "discount" ? benefit(p).rate : 0 });
+      const sale = newSale(p, { date: today(), amount: +b.amount, persons: b.persons, orderRef: b.orderRef, guestName: v.guestName, guestEmail: v.guestEmail, guestPhone: v.guestPhone }, "voucher", { voucherId: v.id, partnerReported: true, notifiedAt: nowISO(), discount: benefit(p).mode === "discount" ? benefit(p) : null });
       // Guest already confirmed it and a flagged sale exists: replace that one instead of counting twice
       if (v.guestSaleId) {
         const prev = await one(env, "sale", v.guestSaleId);
