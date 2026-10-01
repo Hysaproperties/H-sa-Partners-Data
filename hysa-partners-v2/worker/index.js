@@ -1,12 +1,27 @@
 // Hýsa Partner Referrals — Cloudflare worker.
 // Pages in /public are static assets; this worker handles /go links, tracking, forms and the admin/job API.
-import { uid, randKey, nowISO, today, commission, agrLabel, defaultSettings, slugify, withParams, publicPartner, agreementActive, CATEGORIES, SYSTEMS, diffChanges, logChanges, partnerHealth } from "../public/assets/lib.js";
+import { uid, randKey, nowISO, today, commission, agrLabel, defaultSettings, slugify, withParams, publicPartner, agreementActive, CATEGORIES, SYSTEMS, diffChanges, logChanges, partnerHealth, benefit, benefitLabel, cashbackAmount, cashbackState, AGR, exVat, saleCommission, codeFor, guestOfferText, voucherEmail, cashbackAckEmail, signupNoticeEmail, welcomeEmail } from "../public/assets/lib.js";
+import { WorkerMailer } from "./mailer.js";
 
 const JSONH = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
 const json = (o, status = 200, extra = {}) => new Response(JSON.stringify(o), { status, headers: { ...JSONH, ...extra } });
 const bad = (msg, status = 400) => json({ error: msg }, status);
 const clean = (v, max = 500) => String(v ?? "").trim().slice(0, max);
 const emailOk = (e) => !e || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+
+/* ---------- email straight from the site (guests should not wait for the hourly job) ----------
+   Uses the same SMTP account as the hourly job (Cloudflare secrets SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS).
+   If sending fails or SMTP is not set up, nothing breaks: the hourly job sends the email instead. */
+async function sendMail(env, st, { to, subject, text, bcc }) {
+  if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS || !to) return false;
+  const port = +(env.SMTP_PORT || 465);
+  try {
+    const m = await WorkerMailer.connect({ host: env.SMTP_HOST, port, secure: port === 465, startTls: port === 587, credentials: { username: env.SMTP_USER, password: env.SMTP_PASS }, authType: ["plain", "login"], socketTimeoutMs: 15000, responseTimeoutMs: 15000 });
+    await m.send({ from: { name: st.company || "Hýsa", email: env.SMTP_USER }, reply: st.invoiceEmail || env.SMTP_USER, to, subject, text });
+    await m.close?.();
+    return true;
+  } catch (e) { console.error("mail failed", e?.message || e); return false; }
+}
 
 /* ---------- storage ---------- */
 async function all(env, kind) {
@@ -43,14 +58,23 @@ function timingSafeEq(a, b) { if (a.length !== b.length) return false; let r = 0
 const isJob = (req, env) => !!env.JOB_KEY && timingSafeEq(req.headers.get("Authorization") || "", `Bearer ${env.JOB_KEY}`);
 
 /* ---------- sales helpers ---------- */
+// In-person amounts (and amounts read from the partner's thank-you page) are what the guest paid, incl. VAT.
+// The commission is always calculated on the amount excl. VAT.
+let VAT = 25;
 function newSale(partner, f, source, extra = {}) {
   const ts = nowISO();
   const amount = Math.max(0, +f.amount || 0), persons = Math.max(1, +f.persons || 1);
+  const vatIncluded = ["partner", "guest", "voucher", "script"].includes(source);
+  // A Hýsa guest discount given at the till: the amount is what the guest paid after the discount
+  const d = Math.min(90, Math.max(0, +extra.discountRate || 0)) / 100; delete extra.discountRate;
+  const full = d ? amount / (1 - d) : amount;
+  const amountExVat = Math.round((vatIncluded ? exVat(full, VAT) : full) * 100) / 100;
+  const c = saleCommission(partner, { baseExVat: amountExVat, persons, discountExVat: d ? (vatIncluded ? exVat(full - amount, VAT) : full - amount) : 0 });
   return {
     id: uid("s_"), partnerId: partner.id, date: clean(f.date, 10) || today(), amount, persons, currency: partner.currency || "DKK",
     orderRef: clean(f.orderRef, 80), guestName: clean(f.guestName, 120), guestEmail: clean(f.guestEmail, 160), guestPhone: clean(f.guestPhone, 40),
     notes: clean(f.notes, 500), source, method: ["partner", "guest"].includes(source) ? "in-store" : "online",
-    commission: commission(partner, amount, persons), rateLabel: agrLabel(partner), status: "open", review: "approved",
+    vatIncluded, amountExVat, ...(d ? { fullPrice: Math.round(full * 100) / 100, discountRate: d * 100 } : {}), kickback: c.kickback, guestDiscount: c.guestDiscount, commission: c.commission, rateLabel: agrLabel(partner), status: "open", review: "approved",
     partnerReported: source === "partner", guestReceiptId: null, notifiedAt: source === "partner" ? ts : null,
     createdAt: ts, updatedAt: ts, ...extra,
   };
@@ -108,7 +132,7 @@ function voucherState(v, s) {
 
 /* ---------- router ---------- */
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method;
@@ -137,7 +161,7 @@ export default {
           if (p && (!p.scriptSeenAt || Date.now() - Date.parse(p.scriptSeenAt) > 12 * 36e5)) { p.scriptSeenAt = nowISO(); p.updatedAt = nowISO(); await put(env, "partner", p); }
           return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" } });
         }
-        return await api(req, env, url, path, method);
+        return await api(req, env, url, path, method, ctx);
       }
       return env.ASSETS.fetch(req);
     } catch (e) {
@@ -149,13 +173,15 @@ export default {
 
 async function body(req) { try { return JSON.parse(await req.text()); } catch { return {}; } }
 
-async function api(req, env, url, path, method) {
+async function api(req, env, url, path, method, ctx) {
+  const later = (p) => { try { ctx?.waitUntil ? ctx.waitUntil(p) : p.catch(() => {}); } catch (_) {} };
+  if (method === "POST") VAT = +(await settings(env)).vatRate || 25;
   /* ---- public ---- */
   if (path === "/api/public" && method === "GET") {
     const s = await settings(env);
     const partners = (await all(env, "partner")).filter((p) => agreementActive(p) && p.showOnGuide !== false).map(publicPartner)
       .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
-    return json({ company: s.company, partners, categories: CATEGORIES, systems: SYSTEMS, defaultRate: s.defaultRate });
+    return json({ company: s.company, partners, categories: CATEGORIES, systems: SYSTEMS, defaultRate: s.defaultRate, invoiceFrequency: s.invoiceFrequency || "weekly", paymentDays: s.paymentDays, receiptReviewDays: s.receiptReviewDays || 3 });
   }
 
   // Conversion from the tracking script on a partner's website
@@ -181,16 +207,19 @@ async function api(req, env, url, path, method) {
   if (path === "/api/voucher" && method === "POST") {
     const b = await body(req);
     const p = await one(env, "partner", clean(b.partnerId, 60));
-    if (!p || !agreementActive(p)) return bad("This offer is not available right now.");
+    if (!p || !agreementActive(p) || benefit(p).mode !== "discount" || !(benefit(p).rate > 0)) return bad("This offer is not available right now.");
     const name = clean(b.guestName, 120), email = clean(b.guestEmail, 160).toLowerCase();
     if (!name || !email || !emailOk(email)) return bad("Please enter your name and a valid email.");
     const s = await settings(env);
     const existing = (await all(env, "voucher")).find((v) => v.partnerId === p.id && v.guestEmail === email && voucherState(v, s).ok);
     const v = existing || {
       id: await voucherCode(env), partnerId: p.id, guestName: name, guestEmail: email, guestPhone: clean(b.guestPhone, 40), stay: clean(b.stay, 120),
-      offer: p.discountText || "", expiresAt: new Date(Date.now() + (+s.voucherDays || 7) * 864e5).toISOString(), uses: [], confirmKey: randKey(24), createdAt: nowISO(), updatedAt: nowISO(),
+      offer: guestOfferText(p), expiresAt: new Date(Date.now() + (+s.voucherDays || 7) * 864e5).toISOString(), uses: [], confirmKey: randKey(24), createdAt: nowISO(), updatedAt: nowISO(),
     };
-    if (!existing) await put(env, "voucher", v);
+    if (!existing) {
+      await put(env, "voucher", v);
+      later((async () => { if (await sendMail(env, s, { to: v.guestEmail, ...(({ subject, body }) => ({ subject, text: body }))(voucherEmail(v, p, s)) })) { const cur = await one(env, "voucher", v.id); if (cur && !cur.emailedAt) { cur.emailedAt = nowISO(); cur.updatedAt = nowISO(); await put(env, "voucher", cur); } } })());
+    }
     return json({ ok: true, code: v.id, partner: p.name, offer: v.offer, expiresAt: v.expiresAt, guestName: v.guestName, address: p.address || "" });
   }
 
@@ -251,13 +280,15 @@ async function api(req, env, url, path, method) {
       id: uid("p_"), slug, status: "pending", active: true, showOnGuide: true, autoInvoice: true,
       name, category: CATEGORIES.includes(b.category) ? b.category : "Other", currency: "DKK",
       website: clean(b.website, 300), phone: clean(b.phone, 40), publicEmail: clean(b.publicEmail, 160), address: clean(b.address, 200), hours: clean(b.hours, 120),
-      description: clean(b.description, 600), discountCode: clean(b.discountCode, 40), discountText: clean(b.discountText, 120),
+      description: clean(b.description, 600),
       contactName: clean(b.contactName, 120), email, invoiceEmail: clean(b.invoiceEmail, 160), companyId: clean(b.companyId, 40),
-      agreement: { type: "percent", rate: +s.defaultRate || 10, validFrom: today(), validTo: "", notes: "" },
+      offer: { type: AGR[b.offerType] ? b.offerType : "percent", rate: +b.offerRate > 0 ? Math.round(+b.offerRate * 100) / 100 : +s.defaultRate || 10, notes: clean(b.offerNotes, 300) },
+      agreement: { type: AGR[b.offerType] ? b.offerType : "percent", rate: +b.offerRate > 0 ? Math.round(+b.offerRate * 100) / 100 : +s.defaultRate || 10, validFrom: today(), validTo: "", notes: "" },
       integration: { type: system, shop: clean(b.shop, 200), token: clean(b.token, 200), url: clean(b.shopUrl, 300), key: clean(b.key, 200), secret: clean(b.secret, 200) },
       trackKey: randKey(20), portalKey: randKey(28), signupAt: ts, adminNotifiedAt: null, welcomeSentAt: null, createdAt: ts, updatedAt: ts,
     };
     await put(env, "partner", p);
+    later((async () => { const n = signupNoticeEmail(p, url.origin); if (await sendMail(env, s, { to: s.notifyEmail || s.invoiceEmail, subject: n.subject, text: n.body })) { const cur = await one(env, "partner", p.id); if (cur && !cur.adminNotifiedAt) { cur.adminNotifiedAt = nowISO(); await put(env, "partner", cur); } } })());
     return json({ ok: true, portalKey: p.portalKey });
   }
 
@@ -275,18 +306,26 @@ async function api(req, env, url, path, method) {
     await env.DB.prepare("INSERT INTO files (id, mime, data, created_at) VALUES (?, ?, ?, ?)").bind(fileId, img.slice(5, img.indexOf(";")), img, ts).run();
     const f = { date: clean(b.date, 10) || today(), amount, guestName: b.guestName, guestEmail: b.guestEmail, guestPhone: b.guestPhone, orderRef: b.orderRef, notes: b.stay ? `Stay: ${clean(b.stay, 120)}` : "" };
     const sales = await all(env, "sale");
-    const match = sales.find((x) => !x.deleted && x.source === "partner" && !x.guestReceiptId && sameSale(x, { ...f, partnerId: p.id }));
+    const email = clean(b.guestEmail, 160).toLowerCase();
+    if (sales.some((x) => !x.deleted && x.guestReceiptId && (x.guestEmail || "").toLowerCase() === email && sameSale(x, { ...f, partnerId: p.id }))) return bad("We already have this receipt. Thank you!");
+    const cb = cashbackAmount(p, amount);
+    const cashback = cb > 0 ? { rate: benefit(p).rate, amount: cb, currency: p.currency || "DKK", createdAt: ts } : null;
+    const match = sales.find((x) => !x.deleted && ["partner", "voucher"].includes(x.source) && !x.guestReceiptId && sameSale(x, { ...f, partnerId: p.id }));
     if (match) {
-      Object.assign(match, { guestReceiptId: fileId, guestConfirmed: true, guestName: match.guestName || clean(b.guestName, 120), guestEmail: match.guestEmail || clean(b.guestEmail, 160), guestPhone: match.guestPhone || clean(b.guestPhone, 40), updatedAt: ts });
+      Object.assign(match, { guestReceiptId: fileId, guestConfirmed: true, guestName: match.guestName || clean(b.guestName, 120), guestEmail: match.guestEmail || email, guestPhone: match.guestPhone || clean(b.guestPhone, 40), updatedAt: ts });
+      if (cashback && !match.cashback) match.cashback = { ...cashback, amount: cashbackAmount(p, match.amount) };
       await put(env, "sale", match);
     } else {
-      await put(env, "sale", newSale(p, f, "guest", { review: "pending", guestReceiptId: fileId, guestConfirmed: true }));
+      await put(env, "sale", newSale(p, { ...f, guestEmail: email }, "guest", { review: "pending", guestReceiptId: fileId, guestConfirmed: true, cashback }));
     }
-    return json({ ok: true });
+    const saved = match || (await all(env, "sale")).find((x) => x.guestReceiptId === fileId);
+    const rs = await settings(env);
+    if (saved?.cashback && !saved.cashback.ackAt) later((async () => { const m = cashbackAckEmail(saved, p, rs); if (await sendMail(env, rs, { to: saved.guestEmail, subject: m.subject, text: m.body })) { const cur = await one(env, "sale", saved.id); if (cur?.cashback && !cur.cashback.ackAt) { cur.cashback.ackAt = nowISO(); cur.updatedAt = nowISO(); await put(env, "sale", cur); } } })());
+    return json({ ok: true, cashback: match?.cashback?.amount ?? cb, currency: p.currency || "DKK" });
   }
 
   /* ---- partner portal (secret link) ---- */
-  const pm = path.match(/^\/api\/partner\/([A-Za-z0-9]{20,40})(\/[a-z-]+(?:\/HY-[A-Z0-9]{5})?)?$/);
+  const pm = path.match(/^\/api\/partner\/([A-Za-z0-9]{20,40})(\/[a-z-]+(?:\/HY-[A-Z0-9]{5}|\/f_[a-z0-9]{6,30})?)?$/);
   if (pm) {
     const p = await partnerBy(env, "portalKey", pm[1]);
     if (!p) return bad("This partner link is not valid.", 404);
@@ -297,8 +336,9 @@ async function api(req, env, url, path, method) {
       const { token, secret, key, ...integ } = p.integration || {};
       return json({
         company: s.company, origin: url.origin, cookieDays: s.cookieDays, paymentDays: s.paymentDays, vatRate: s.vatRate,
-        partner: { ...publicPartner(p), status: p.status, contactName: p.contactName, contactEmail: p.email, invoiceEmail: p.invoiceEmail, companyId: p.companyId, agreement: p.agreement, agreementLabel: agrLabel(p), trackKey: p.trackKey, integration: { ...integ, connected: !!(token || key) } },
+        partner: { ...publicPartner(p), discountText: p.discountText || "", discountCode: p.discountCode || "", status: p.status, contactName: p.contactName, contactEmail: p.email, invoiceEmail: p.invoiceEmail, companyId: p.companyId, agreement: p.agreement, agreementLabel: agrLabel(p), trackKey: p.trackKey, integration: { ...integ, connected: !!(token || key) } },
         todo: partnerHealth(p, { sales, invoices }).issues.filter((x) => x.who === "partner").map((x) => x.text),
+        deal: { pays: agrLabel(p), guests: benefitLabel(p), mode: benefit(p).mode, rate: benefit(p).rate, code: codeFor(p), frequency: p.invoiceFrequency || s.invoiceFrequency || "weekly", reviewDays: +s.receiptReviewDays || 3 },
         clicks: { total: clicks?.n || 0, last30: clicks?.m || 0 },
         sales: sales.filter((x) => x.partnerId === p.id && !x.deleted && x.review !== "rejected").map(({ guestEmail, guestPhone, ...x }) => x).sort((a, b) => (b.date || "").localeCompare(a.date || "")),
         invoices: invoices.filter((x) => x.partnerId === p.id && !x.deleted).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")),
@@ -310,7 +350,7 @@ async function api(req, env, url, path, method) {
       const st = voucherState(v, await settings(env));
       if (v && v.partnerId !== p.id) return json({ ok: false, reason: "This voucher is for another business." });
       if (!st.ok) return json(st);
-      return json({ ok: true, guestName: v.guestName, offer: v.offer || p.discountText || "", expiresAt: v.expiresAt, usedBefore: (v.uses || []).length });
+      return json({ ok: true, guestName: v.guestName, offer: v.offer || guestOfferText(p), expiresAt: v.expiresAt, usedBefore: (v.uses || []).length });
     }
     if (action === "/redeem" && method === "POST") {
       if (p.status !== "approved") return bad("Your partnership is not approved yet.");
@@ -322,7 +362,7 @@ async function api(req, env, url, path, method) {
       const st = voucherState(v, s);
       if (!st.ok) return bad(st.reason);
       if (!(+b.amount > 0)) return bad("Please enter the amount the guest pays.");
-      const sale = newSale(p, { date: today(), amount: +b.amount, persons: b.persons, orderRef: b.orderRef, guestName: v.guestName, guestEmail: v.guestEmail, guestPhone: v.guestPhone }, "voucher", { voucherId: v.id, partnerReported: true, notifiedAt: nowISO() });
+      const sale = newSale(p, { date: today(), amount: +b.amount, persons: b.persons, orderRef: b.orderRef, guestName: v.guestName, guestEmail: v.guestEmail, guestPhone: v.guestPhone }, "voucher", { voucherId: v.id, partnerReported: true, notifiedAt: nowISO(), discountRate: benefit(p).mode === "discount" ? benefit(p).rate : 0 });
       // Guest already confirmed it and a flagged sale exists: replace that one instead of counting twice
       if (v.guestSaleId) {
         const prev = await one(env, "sale", v.guestSaleId);
@@ -348,10 +388,33 @@ async function api(req, env, url, path, method) {
       await put(env, "sale", newSale(p, f, "partner"));
       return json({ ok: true });
     }
+    const fm = action.match(/^\/file\/(f_[a-z0-9]{6,30})$/);
+    if (fm && method === "GET") {
+      if (!(await all(env, "sale")).some((x) => x.partnerId === p.id && !x.deleted && x.guestReceiptId === fm[1])) return bad("Not found", 404);
+      const f = await env.DB.prepare("SELECT mime, data FROM files WHERE id = ?").bind(fm[1]).first();
+      if (!f) return bad("Not found", 404);
+      const bin = Uint8Array.from(atob(f.data.slice(f.data.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+      return new Response(bin, { headers: { "Content-Type": f.mime, "Cache-Control": "private, max-age=86400" } });
+    }
+    if ((action === "/receipt-ok" || action === "/dispute") && method === "POST") {
+      const b = await body(req);
+      const sale = await one(env, "sale", clean(b.saleId, 60));
+      if (!sale || sale.partnerId !== p.id || sale.deleted || sale.source !== "guest") return bad("Receipt not found.", 404);
+      if (sale.review !== "pending") return bad("This receipt has already been handled.");
+      if (action === "/receipt-ok") Object.assign(sale, { review: "approved", partnerReported: true, partnerCheckedAt: nowISO() });
+      else {
+        const reason = clean(b.reason, 300);
+        if (!reason) return bad("Please tell us why the receipt is wrong.");
+        Object.assign(sale, { review: "disputed", disputeReason: reason, disputedAt: nowISO(), adminNotifiedAt: null });
+      }
+      sale.updatedAt = nowISO();
+      await put(env, "sale", sale);
+      return json({ ok: true });
+    }
     if (action === "/update" && method === "POST") {
       const b = await body(req);
       const before = { ...p }, oldI = { ...(p.integration || {}) };
-      for (const k of ["phone", "publicEmail", "address", "hours", "description", "website", "contactName", "invoiceEmail", "discountCode", "discountText"]) if (k in b) p[k] = clean(b[k], k === "description" ? 600 : 300);
+      for (const k of ["phone", "publicEmail", "address", "hours", "description", "website", "contactName", "invoiceEmail"]) if (k in b) p[k] = clean(b[k], k === "description" ? 600 : 300);
       if (b.integration) {
         const i = b.integration, cur = p.integration || {};
         p.integration = { ...cur, type: SYSTEMS[i.type] ? i.type : cur.type, shop: clean(i.shop ?? cur.shop, 200), url: clean(i.url ?? cur.url, 300),
@@ -396,12 +459,28 @@ async function api(req, env, url, path, method) {
     const docs = Array.isArray(b.docs) ? b.docs.slice(0, 500) : [];
     const kinds = ["partner", "sale", "invoice", "voucher", "settings", "meta"];
     const stmts = [];
+    const fromAdmin = path === "/api/admin/upsert";
+    const KEEP = { partner: ["welcomeSentAt", "adminNotifiedAt", "scriptSeenAt", "lastAutoInvoice", "lastConversionAt"], voucher: ["emailedAt", "followUpSentAt"], sale: ["notifiedAt"] };
+    const welcome = [];
     for (const d of docs) {
       if (!kinds.includes(d.kind) || !d.doc?.id) continue;
+      if (fromAdmin && KEEP[d.kind]) {
+        const cur = await one(env, d.kind, d.doc.id);
+        if (cur) {
+          for (const k of KEEP[d.kind]) if (!d.doc[k] && cur[k]) d.doc[k] = cur[k];
+          if (d.kind === "partner" && cur.integration) for (const k of ["lastSync", "lastError"]) if (d.doc.integration && d.doc.integration[k] === undefined) d.doc.integration[k] = cur.integration[k];
+          if (d.kind === "sale" && cur.cashback && d.doc.cashback) for (const k of ["ackAt", "paidAt", "paidEmailAt", "refundId", "frisbiiInvoice", "method"]) if (!d.doc.cashback[k] && cur.cashback[k] && !(k === "paidAt" && d.doc.cashback.method === "manual")) d.doc.cashback[k] = cur.cashback[k];
+        }
+        if (d.kind === "partner" && d.doc.status === "approved" && !d.doc.welcomeSentAt && d.doc.email && !d.doc.deleted) welcome.push(d.doc);
+      }
       if (d.kind === "partner") { d.doc.slug = d.doc.slug || slugify(d.doc.name); d.doc.trackKey = d.doc.trackKey || randKey(20); d.doc.portalKey = d.doc.portalKey || randKey(28); }
       stmts.push(putStmt(env, d.kind, d.doc));
     }
     if (stmts.length) await env.DB.batch(stmts);
+    if (welcome.length) {
+      const st = await settings(env);
+      for (const p of welcome) later((async () => { const m = welcomeEmail(p, st, url.origin); if (await sendMail(env, st, { to: p.email, subject: m.subject, text: m.body })) { const cur = await one(env, "partner", p.id); if (cur && !cur.welcomeSentAt) { cur.welcomeSentAt = nowISO(); await put(env, "partner", cur); } } })());
+    }
     return json({ ok: true, saved: stmts.length });
   }
   if (path.startsWith("/api/admin/file/") && method === "GET") {

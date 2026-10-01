@@ -28,7 +28,7 @@ function render(){
   $("#no").onclick=async()=>{try{await send({visited:false});done("Enjoy the rest of your stay.")}catch(e){alert(e.message)}};
   $("#yes").onclick=()=>{
     $("#form").innerHTML=`<form id="f" class="panel panel-b form" novalidate>
-      <label class="f">Amount you paid (DKK)<input id="amt" type="number" step="0.01" min="0" inputmode="decimal" required></label>
+      <label class="f">Amount you paid, incl. VAT (DKK)<input id="amt" type="number" step="0.01" min="0" inputmode="decimal" required></label>
       <label class="f">Date<input id="dt" type="date" value="${new Date().toISOString().slice(0,10)}"></label>
       <div class="full"><input id="file" type="file" accept="image/*" hidden><div class="drop" id="drop" role="button" tabindex="0"><b>Add a photo of the receipt</b><span class="sm">Optional, but it helps a lot</span></div></div>
       <div class="full" id="msg"></div><div class="full"><button class="btn pri lg" style="width:100%">Send</button></div></form>`;

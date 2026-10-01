@@ -38,11 +38,13 @@ function snippet(){return `<!-- 1. On every page of your website, inside <head> 
 <\/script>`}
 function render(){
   const p=D.partner;$("#title").textContent=p.name;
-  $("#status").innerHTML=p.status==="approved"?`<div class="row"><span class="chip ok">Approved partner</span><span class="chip money">${esc(p.agreementLabel)} + ${D.vatRate}% VAT</span></div>`:p.status==="rejected"?'<span class="chip bad">Not approved</span>':'<div class="notice warn">Your sign-up is waiting for approval. We will email you when you are live in the guest guide.</div>';
+  $("#status").innerHTML=p.status==="approved"?`<div class="row"><span class="chip ok">Approved partner</span><span class="chip money">You pay Hýsa ${esc(p.agreementLabel)}${(p.agreement?.type||"percent")==="percent"?" excl. VAT":""} + ${D.vatRate}% VAT</span><span class="chip">Invoiced ${D.deal?.frequency==="monthly"?"monthly":"weekly"}</span><span class="chip info" style="white-space:normal">Hýsa guests get: ${esc(D.deal?.guests||"")}</span></div>`:p.status==="rejected"?'<span class="chip bad">Not approved</span>':'<div class="notice warn">Your sign-up is waiting for approval. We will email you when you are live in the guest guide.</div>';
   const due=D.sales.filter(s=>s.status==="open"&&s.review!=="pending").reduce((a,s)=>a+(+s.commission||0),0);
   const it=p.integration||{};
   $("#main").innerHTML=`
-  ${p.status==="approved"?`<section class="panel" style="border:2px solid var(--accent)"><div class="panel-h"><h3>Redeem a Hýsa guest voucher</h3><span class="sm">Before the guest pays</span></div><div class="panel-b">
+  ${p.status==="approved"&&D.deal?.mode==="discount"?`<div class="notice ok stack" style="gap:4px"><b>Hýsa guests get ${esc(D.deal.rate)}% off with you</b><span>In person: check their Hýsa voucher below before they pay, give ${esc(D.deal.rate)}% off and register the amount they pay.${D.deal.code?` Online: create the discount code <b class="mono">${esc(D.deal.code)}</b> giving ${esc(D.deal.rate)}% off in your webshop.`:""} The discount is deducted from your Hýsa invoice, so you never pay more than ${esc(D.deal.pays)} in total.</span></div>`:""}
+  ${p.status==="approved"&&D.deal?.mode==="cashback"?`<div class="notice ok stack" style="gap:4px"><b>Hýsa guests get cashback from Hýsa</b><span>Guests pay your normal price. Afterwards they send Hýsa a photo of the receipt and Hýsa pays them back. You do not need to do anything at the till. You can check the receipts below.</span></div>`:""}
+  ${p.status==="approved"&&D.deal?.mode==="discount"?`<section class="panel" style="border:2px solid var(--accent)"><div class="panel-h"><h3>Redeem a Hýsa guest voucher</h3><span class="sm">Before the guest pays</span></div><div class="panel-b">
     <form id="vCheck" class="row" style="align-items:flex-end"><label class="f" style="flex:1;min-width:180px">Voucher code<input id="vCode" class="mono" placeholder="HY-XXXXX" autocomplete="off" style="font-size:1.2rem;text-transform:uppercase"></label><button class="btn pri lg">Check</button></form>
     <div id="vResult" style="margin-top:14px"></div></div></section>`:""}
   ${(D.todo||[]).length?`<div class="notice warn stack" style="gap:6px"><b>To do for your Hýsa partnership</b><ul style="margin:0;padding-left:18px">${D.todo.map(t=>`<li>${esc(t)}</li>`).join("")}</ul><span class="sm">Most of these you fix in “Your listing” or “Online bookings” below. Questions: hysa@hysa.fo</span></div>`:""}
@@ -57,7 +59,7 @@ function render(){
       ${p.status!=="approved"?'<p class="muted" style="margin:0">Available once you are approved.</p>':`
       <form id="saleForm" class="form">
         <label class="f">Date<input id="sDate" type="date" value="${new Date().toISOString().slice(0,10)}" required></label>
-        <label class="f">Amount paid (${esc(p.currency||"DKK")})<input id="sAmount" type="number" step="0.01" min="0" inputmode="decimal" required></label>
+        <label class="f">Amount paid incl. VAT (${esc(p.currency||"DKK")})<input id="sAmount" type="number" step="0.01" min="0" inputmode="decimal" required></label>
         <label class="f">Receipt no.<input id="sRef"></label>
         <label class="f">Persons<input id="sPersons" type="number" min="1" value="1"></label>
         <label class="f full">Guest name <span class="hint">if known</span><input id="sGuest"></label>
@@ -70,11 +72,16 @@ function render(){
       ${it.lastError?`<div class="notice bad">Last check failed: ${esc(it.lastError)}</div>`:it.lastSync?`<div class="sm">Last checked ${new Date(it.lastSync).toLocaleString("en-GB")}</div>`:""}
     </div></section>
   </div>
+  ${(()=>{const rs=D.sales.filter(s=>s.source==="guest"&&s.review==="pending");if(!rs.length)return "";const days=D.deal?.reviewDays||3;
+    return `<section class="panel" style="border:2px solid var(--warn)"><div class="panel-h"><h3>Guest receipts to check</h3><span class="sm">Approved automatically after ${days} days</span></div><div class="panel-b stack" style="gap:12px">
+    <p class="sm" style="margin:0">A Hýsa guest sent us a receipt from you. Check it. If it is wrong (not your receipt, wrong amount, not a Hýsa guest), tell us before the date shown.</p>
+    ${rs.map(s=>`<div class="row" style="justify-content:space-between;gap:10px;border-top:1px solid var(--line);padding-top:10px"><div><b>${fmt(s.amount,s.currency)}</b> · ${fdate(s.date)} · ${esc(s.guestName||"Guest")}<div class="sm">Check before ${fdate(new Date(new Date(s.createdAt).getTime()+days*864e5).toISOString())}</div></div>
+      <div class="row">${s.guestReceiptId?`<a class="btn sm" target="_blank" rel="noopener" href="/api/partner/${encodeURIComponent(key)}/file/${encodeURIComponent(s.guestReceiptId)}">See receipt</a>`:""}<button class="btn sm pri" data-rok="${s.id}">Correct</button><button class="btn sm" data-rdis="${s.id}">Not correct</button></div></div>`).join("")}
+    </div></section>`})()}
   <section class="panel"><div class="panel-h"><h3>Purchases by Hýsa guests</h3></div>
-    ${D.sales.length?`<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>How</th><th>Order / receipt</th><th>Guest</th><th class="num">Amount</th><th class="num">Commission</th><th>Status</th></tr></thead><tbody>
-    ${D.sales.map(s=>`<tr><td class="mono">${fdate(s.date)}</td><td>${how(s)}${s.guestConfirmed&&s.partnerReported?' <span class="chip ok">Receipt</span>':""}</td><td class="mono">${esc(s.orderRef||"—")}</td><td>${esc(s.guestName||"—")}</td><td class="num">${fmt(s.amount,s.currency)}</td><td class="num">${fmt(s.commission,s.currency)}</td><td>${s.review==="pending"?'<span class="chip warn">Please confirm</span>':s.status==="paid"?'<span class="chip ok">Paid</span>':s.status==="invoiced"?'<span class="chip info">Invoiced</span>':'<span class="chip">Next invoice</span>'}</td></tr>`).join("")}
+    ${D.sales.length?`<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>How</th><th>Order / receipt</th><th>Guest</th><th class="num">Amount</th><th class="num">Commission <span class="sm">(of amount excl. VAT)</span></th><th>Status</th></tr></thead><tbody>
+    ${D.sales.map(s=>`<tr><td class="mono">${fdate(s.date)}</td><td>${how(s)}${s.guestConfirmed&&s.partnerReported?' <span class="chip ok">Receipt</span>':""}</td><td class="mono">${esc(s.orderRef||"—")}</td><td>${esc(s.guestName||"—")}</td><td class="num">${fmt(s.amount,s.currency)}${s.vatIncluded?'<div class="sm">incl. VAT</div>':s.amountExVat!=null?'<div class="sm">excl. VAT</div>':""}</td><td class="num">${fmt(s.commission,s.currency)}</td><td>${s.review==="disputed"?'<span class="chip bad">You disputed it</span>':s.review==="pending"?'<span class="chip warn">Please check</span>':s.status==="paid"?'<span class="chip ok">Paid</span>':s.status==="invoiced"?'<span class="chip info">Invoiced</span>':'<span class="chip">Next invoice</span>'}</td></tr>`).join("")}
     </tbody></table></div>`:'<div class="empty">No purchases yet.</div>'}
-    ${D.sales.some(s=>s.review==="pending")?'<div class="panel-b"><div class="notice warn">A guest sent us a receipt for a purchase you have not registered. Register it above (same date and amount) to confirm it.</div></div>':""}
   </section>
   <section class="panel"><div class="panel-h"><h3>Invoices</h3></div>
     ${D.invoices.length?`<div class="tbl-wrap"><table><thead><tr><th>No.</th><th>Period</th><th>Due</th><th class="num">Total incl. VAT</th><th>Status</th></tr></thead><tbody>
@@ -88,8 +95,7 @@ function render(){
       <label class="f">Address<input id="address" value="${esc(p.address)}"></label>
       <label class="f">Opening hours<input id="hours" value="${esc(p.hours)}"></label>
       <label class="f full">Description (English)<textarea id="description">${esc(p.description)}</textarea></label>
-      <label class="f">Offer for Hýsa guests<input id="discountText" value="${esc(p.discountText)}"></label>
-      <label class="f">Discount code<input id="discountCode" class="mono" value="${esc(p.discountCode)}"></label>
+
       <label class="f">Invoice email<input id="invoiceEmail" value="${esc(p.invoiceEmail)}"></label>
       <div class="full"><button class="btn">Save listing</button></div>
     </form></div></section>`;
@@ -110,6 +116,8 @@ document.addEventListener("change",e=>{if(e.target.id==="iType")renderIntegratio
 document.addEventListener("click",async e=>{const b=e.target.closest("button");if(!b)return;
   if(b.hasAttribute("data-copy-shop")){try{await navigator.clipboard.writeText(snippetShop());toast("Code copied")}catch(_){toast("Select the code and copy it")}}
   if(b.hasAttribute("data-copy-snip")){try{await navigator.clipboard.writeText(snippet());toast("Code copied")}catch(_){toast("Select the code and copy it")}}
+  if(b.dataset.rok){try{await post("/receipt-ok",{saleId:b.dataset.rok});toast("Thank you. Confirmed.");load()}catch(err){toast(err.message)}return}
+  if(b.dataset.rdis){const reason=prompt("What is wrong with this receipt? (e.g. not our receipt, wrong amount, not a Hýsa guest)");if(!reason)return;try{await post("/dispute",{saleId:b.dataset.rdis,reason});toast("Sent to Hýsa. We will look at it.");load()}catch(err){toast(err.message)}return}
   if(b.dataset.saveType){try{await post("/update",{integration:{type:b.dataset.saveType}});toast("Saved");load()}catch(err){toast(err.message)}}});
 document.addEventListener("submit",async e=>{e.preventDefault();const f=e.target,v=id=>(f.querySelector("#"+id)?.value||"").trim();const btn=f.querySelector("button");btn.disabled=true;
   try{
@@ -117,12 +125,12 @@ document.addEventListener("submit",async e=>{e.preventDefault();const f=e.target
       const r=await fetch(`/api/partner/${encodeURIComponent(key)}/voucher/${encodeURIComponent(code)}`);const j=await r.json().catch(()=>({ok:false,reason:"Not a valid code."}));
       $("#vResult").innerHTML=!j.ok?`<div class="notice bad"><b>Not valid.</b> ${esc(j.reason||"Check the code.")} Do not give the Hýsa offer.</div>`:`
         <div class="notice ok" style="font-size:1rem"><b>Valid voucher for ${esc(j.guestName)}.</b> Give the guest: <b>${esc(j.offer||"the Hýsa offer")}</b>${j.usedBefore?` <span class="sm">(used ${j.usedBefore} time(s) before)</span>`:""}</div>
-        <form id="vRedeem" class="form" data-code="${esc(code)}" style="margin-top:12px"><label class="f">Amount the guest pays (${esc(D.partner.currency||"DKK")})<input id="vAmount" type="number" step="0.01" min="0" inputmode="decimal" required></label><label class="f">Receipt no. <span class="hint">optional</span><input id="vRef"></label><div class="full"><button class="btn pri lg">Register purchase</button></div></form>`;
+        <form id="vRedeem" class="form" data-code="${esc(code)}" style="margin-top:12px"><label class="f">Amount the guest pays${D.deal?.mode==="discount"?` after the ${esc(D.deal.rate)}% discount`:""}, incl. VAT (${esc(D.partner.currency||"DKK")})<input id="vAmount" type="number" step="0.01" min="0" inputmode="decimal" required></label><label class="f">Receipt no. <span class="hint">optional</span><input id="vRef"></label><div class="full"><button class="btn pri lg">Register purchase</button></div></form>`;
       $("#vAmount")?.focus();return}
     if(f.id==="vRedeem"){const j=await post("/redeem",{code:f.dataset.code,amount:+v("vAmount"),orderRef:v("vRef")});$("#vResult").innerHTML=`<div class="notice ok"><b>Registered.</b> Thank you. The purchase by ${esc(j.guestName)} is saved.</div>`;$("#vCode").value="";setTimeout(load,1500);return}
     if(f.id==="saleForm"){const j=await post("/sale",{date:v("sDate"),amount:+v("sAmount"),orderRef:v("sRef"),persons:+v("sPersons")||1,guestName:v("sGuest")});toast(j.matchedGuestReceipt?"Registered and matched with the guest's receipt":"Purchase registered");await load();return}
     if(f.id==="iForm"){await post("/update",{integration:{type:$("#iType").value,shop:v("iShop"),token:v("iToken"),url:v("iUrl"),key:v("iKey"),secret:v("iSecret")}});toast("Connection saved. We check for orders every hour.");await load();return}
-    if(f.id==="infoForm"){await post("/update",{website:v("website"),phone:v("phone"),publicEmail:v("publicEmail"),address:v("address"),hours:v("hours"),description:v("description"),discountText:v("discountText"),discountCode:v("discountCode"),invoiceEmail:v("invoiceEmail")});toast("Listing saved");await load();return}
+    if(f.id==="infoForm"){await post("/update",{website:v("website"),phone:v("phone"),publicEmail:v("publicEmail"),address:v("address"),hours:v("hours"),description:v("description"),invoiceEmail:v("invoiceEmail")});toast("Listing saved");await load();return}
   }catch(err){toast(err.message)}finally{btn.disabled=false}});
 load();
 </script>

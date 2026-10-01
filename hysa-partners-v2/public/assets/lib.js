@@ -14,7 +14,7 @@ export function defaultSettings() {
     id: "main", company: "Hýsa Sp/f", address: "Heygsvegur 33, Tórshavn, Faroe Islands", companyId: "",
     invoiceEmail: "hysa@hysa.fo", notifyEmail: "hysa@hysa.fo", invoicePrefix: "HYSA-AFF",
     bankName: "Betri Banki", bankReg: "9181", bankAccount: "5763233", iban: "FO6691810006131923", bic: "EIKBFOTF",
-    vatRate: 25, paymentDays: 8, invoiceDay: 1, autoInvoice: true, defaultRate: 10, cookieDays: 30, voucherDays: 7, voucherUses: 0, followUpHours: 24,
+    vatRate: 25, paymentDays: 8, invoiceDay: 1, autoInvoice: true, defaultRate: 10, cookieDays: 30, voucherDays: 7, voucherUses: 0, followUpHours: 24, invoiceFrequency: "weekly", receiptReviewDays: 3, defaultCashback: 5,
     updatedAt: "1970-01-01T00:00:00.000Z",
   };
 }
@@ -32,6 +32,7 @@ export function fmtMoney(n, cur = "DKK") {
   try { return new Intl.NumberFormat("en-GB", { style: "currency", currency: cur || "DKK" }).format(+n || 0); }
   catch { return `${cur} ${(+n || 0).toFixed(2)}`; }
 }
+export function agrLabelVat(p) { return `${agrLabel(p)}${(p?.agreement?.type || "percent") === "percent" ? " excl. VAT" : ""}`; }
 export function agrLabel(p) {
   const a = p?.agreement || {};
   if (a.type === "fixed_order") return `${fmtMoney(a.rate, p.currency)} per booking`;
@@ -56,12 +57,71 @@ export function withParams(url, params) {
   return base + (base.includes("?") ? "&" : "?") + q + (hash ? "#" + hash : "");
 }
 export const normRef = (r) => String(r || "").replace(/^#/, "").trim().toLowerCase();
-export const billable = (s) => !s.deleted && s.review !== "pending" && s.review !== "rejected";
+export const billable = (s) => !s.deleted && s.review !== "pending" && s.review !== "rejected" && s.review !== "disputed";
+
+/* ---- VAT: guests pay prices incl. VAT; Hýsa's commission is calculated excl. VAT ---- */
+export const exVat = (amount, vat = 25) => Math.round(((+amount || 0) / (1 + (+vat || 0) / 100)) * 100) / 100;
+export const saleBase = (s) => (s && s.amountExVat != null ? +s.amountExVat : +s?.amount || 0);
+export const vatNote = (s) => (s?.vatIncluded ? "incl. VAT" : s?.amountExVat != null ? "excl. VAT" : "");
+
+/* ---- the deal ----
+   The partner only states its kickback: what it pays Hýsa per sale, in total, excl. VAT.
+   Hýsa decides if part of it goes to the guest:
+   - discount: the guest gets X% off at the partner (voucher in person, discount code online). The discount (excl. VAT) is deducted from the invoice.
+   - cashback: the guest pays full price and Hýsa pays X% back after the receipt. Hýsa pays it from its own commission.
+   The partner never pays more than the kickback. */
+export const BENEFITS = { none: "Nothing", discount: "A discount at the partner (deducted from our commission)", cashback: "Cashback from Hýsa after the receipt" };
+export const FREQ = { weekly: "Every week (Monday)", monthly: "Every month (day 1)" };
+export function benefit(p) {
+  const g = p?.guestBenefit;
+  if (g && BENEFITS[g.mode]) return { mode: g.mode, rate: Math.max(0, +g.rate || 0), code: g.mode === "discount" ? String(g.code || "").trim() : "" };
+  // partners from before the deal model: a "10% off" text becomes a 10% discount
+  const m = String(p?.discountText || "").match(/([0-9]+(?:[.,][0-9]+)?)\s*%/);
+  if (m) return { mode: "discount", rate: +m[1].replace(",", "."), code: String(p?.discountCode || "").trim(), legacy: true };
+  return { mode: "none", rate: 0, code: "", legacy: !!(p?.discountText || p?.discountCode) };
+}
+export const codeFor = (p) => benefit(p).code || String(p?.discountCode || "").trim();
+export function benefitLabel(p) {
+  const b = benefit(p);
+  if (b.mode === "cashback") return `${b.rate}% cashback from Hýsa`;
+  if (b.mode === "discount") return `${b.rate}% off at the partner${b.code ? ` (online code ${b.code})` : ""}`;
+  return "Nothing";
+}
+export const guestOfferText = (p) => { const b = benefit(p); return b.mode === "discount" && b.rate > 0 ? `${b.rate}% off for Hýsa guests` : b.mode === "cashback" && b.rate > 0 ? `${b.rate}% cashback from Hýsa` : ""; };
+// What Hýsa keeps, shown as a worked example on a 1,000 kr purchase (price incl. VAT, before any discount)
+export function keepsLabel(p, vat = 25) {
+  const a = p?.agreement || {}, b = benefit(p), full = 1000, ex = exVat(full, vat);
+  const kick = (a.type || "percent") === "percent" ? Math.round(ex * (+a.rate || 0)) / 100 : null;
+  if (kick == null) return b.mode === "none" ? agrLabel(p) : `${agrLabel(p)} minus the ${b.mode} (${b.rate}%)`;
+  const give = b.mode === "discount" ? exVat(full * b.rate / 100, vat) : b.mode === "cashback" ? full * b.rate / 100 : 0;
+  const keep = Math.round((kick - give) * 100) / 100;
+  if (b.mode === "none") return `${kick} kr per 1,000 kr the guest pays (incl. VAT)`;
+  return `${keep} kr per 1,000 kr the guest pays (${kick} kr commission − ${give} kr ${b.mode === "discount" ? "discount excl. VAT" : "cashback"})`;
+}
+// The commission line for one sale: kickback on the full price excl. VAT, minus any Hýsa guest discount (excl. VAT)
+export function saleCommission(p, { baseExVat, persons = 1, discountExVat = 0 }) {
+  const kickback = commission(p, baseExVat, persons);
+  return { kickback, guestDiscount: Math.round((+discountExVat || 0) * 100) / 100, commission: Math.max(0, Math.round((kickback - (+discountExVat || 0)) * 100) / 100) };
+}
+export const cashbackAmount = (p, amount) => { const b = benefit(p); return b.mode === "cashback" && b.rate > 0 ? Math.round((+amount || 0) * b.rate) / 100 : 0; };
+// Where a guest's cashback is in its life: review → waiting (partner has not paid) → ready → paid; failed = needs a manual payout
+export function cashbackState(s) {
+  const c = s?.cashback;
+  if (!c || !(+c.amount > 0)) return "";
+  if (c.paidAt) return "paid";
+  if (s.deleted || s.review === "rejected") return "cancelled";
+  if (c.error) return "failed";
+  if (s.review === "pending" || s.review === "disputed") return "review";
+  if (s.status === "paid") return "ready";
+  return "waiting";
+}
+export const CB_LABEL = { review: "Receipt being checked", waiting: "Waiting for partner payment", ready: "Ready to pay out", paid: "Paid to guest", failed: "Pay manually", cancelled: "Cancelled" };
 
 export function publicPartner(p) {
   return {
     id: p.id, slug: p.slug, name: p.name, category: p.category, description: p.description || "",
-    discountCode: p.discountCode || "", discountText: p.discountText || "",
+    discountCode: benefit(p).mode === "discount" && benefit(p).rate > 0 ? codeFor(p) : "", discountText: benefit(p).mode === "discount" ? guestOfferText(p) : "",
+    benefit: benefit(p).mode, cashback: benefit(p).mode === "cashback" ? benefit(p).rate : 0, discount: benefit(p).mode === "discount" ? benefit(p).rate : 0,
     go: p.website ? `/go/${p.slug}` : "", website: (p.website || "").replace(/^https?:\/\//, "").replace(/\/$/, ""),
     phone: p.phone || "", email: p.publicEmail || p.email || "", address: p.address || "", hours: p.hours || "",
   };
@@ -104,10 +164,11 @@ export function saleEmail(sale, partner, settings) {
     `How: ${howLabel(sale)}`,
     sale.orderRef ? `Order / receipt no.: ${sale.orderRef}` : null,
     sale.guestName ? `Guest: ${sale.guestName}` : null,
-    `Purchase amount: ${fmtMoney(sale.amount, sale.currency)}`, "",
-    `Agreement: ${sale.rateLabel || agrLabel(partner)}`,
+    `Purchase amount: ${fmtMoney(sale.amount, sale.currency)}${sale.vatIncluded ? " incl. VAT" : sale.amountExVat != null ? " excl. VAT" : ""}`, "",
+    `Agreement: ${sale.rateLabel || agrLabel(partner)}${sale.amountExVat != null ? ` of ${fmtMoney(sale.amountExVat, sale.currency)} excl. VAT` : ""}`,
+    sale.guestDiscount ? `Commission: ${fmtMoney(sale.kickback, sale.currency)} − Hýsa guest discount you gave ${fmtMoney(sale.guestDiscount, sale.currency)} (excl. VAT)` : null,
     `Commission to ${co}: ${fmtMoney(sale.commission, sale.currency)} (excl. VAT)`, "",
-    "It will be included on your next monthly invoice. Please reply to this email within 7 days if anything does not match.", "",
+    "It will be included on your next invoice. Please reply to this email within 7 days if anything does not match.", "",
     "Kind regards,", co,
   ].filter((l) => l !== null);
   return { to: partner?.email || "", subject: `${co} referral: ${fmtMoney(sale.amount, sale.currency)} on ${(sale.date || "").slice(0, 10)}${sale.orderRef ? ` (${sale.orderRef})` : ""}`, body: lines.join("\n") };
@@ -137,8 +198,10 @@ export function welcomeEmail(partner, settings, baseUrl) {
     body: [
       `Dear ${partner.contactName || partner.name},`, "",
       `${partner.name} is now approved as a ${co} partner and is shown in our guest guide.`, "",
-      `Agreed commission: ${agrLabel(partner)} (excl. VAT), invoiced monthly with ${settings.paymentDays || 8} days payment terms.`, "",
+      `Agreed commission: ${agrLabel(partner)} (excl. VAT), invoiced ${(partner.invoiceFrequency || settings.invoiceFrequency) === "monthly" ? "monthly" : "weekly"} with ${settings.paymentDays || 8} days payment terms.`, "",
       "Your partner page (keep this link private):", portal, "",
+      ...(benefit(partner).mode === "discount" ? [`Hýsa guests get ${benefit(partner).rate}% off with you. In person they show a Hýsa voucher: check it on your partner page before they pay, give ${benefit(partner).rate}% off and register the amount.${codeFor(partner) ? ` Online: please create the discount code ${codeFor(partner)} (${benefit(partner).rate}% off) in your webshop.` : ""} The discount is deducted from your invoice, so you never pay more than the agreed commission in total.`, ""]
+        : benefit(partner).mode === "cashback" ? [`Hýsa guests get ${benefit(partner).rate}% cashback from Hýsa. They pay your normal price; you do not need to do anything at the till.`, ""] : []),
       "On your partner page you can:",
       "- see every guest we have sent you and the commission",
       "- report purchases our guests make in person",
@@ -148,8 +211,25 @@ export function welcomeEmail(partner, settings, baseUrl) {
   };
 }
 
+export function voucherEmail(v, p, st) {
+  return { subject: `Your Hýsa guest voucher for ${p?.name || "your visit"}: ${v.id}`, body: [
+    `Hi ${(v.guestName || "").split(" ")[0] || "there"},`, "",
+    `Here is your personal Hýsa guest voucher for ${p?.name || ""}.`, "",
+    `Voucher code: ${v.id}`, v.offer ? `Offer: ${v.offer}` : null, `Valid until: ${(v.expiresAt || "").slice(0, 10)}`, p?.address ? `Address: ${p.address}` : null, "",
+    "Show the code to the staff before you pay.", "", "Enjoy your stay,", st.company].filter((l) => l !== null).join("\n") };
+}
+export function cashbackAckEmail(s, p, st) {
+  const amt = fmtMoney(s.cashback.amount, s.cashback.currency);
+  return { subject: `We got your receipt from ${p?.name || "your visit"}`, body: [`Hi ${(s.guestName || "").split(" ")[0] || "there"},`, "",
+    `Thank you for your receipt from ${p?.name || "a local business"} (${fmtMoney(s.amount, s.currency)}).`, "",
+    `You will get ${amt} back (${s.cashback.rate}%) on the card you paid your Hýsa stay with. It usually takes 1–3 weeks.`, "", "Enjoy your stay,", st.company].join("\n") };
+}
+export function signupNoticeEmail(p, origin) {
+  return { subject: `New partner sign-up: ${p.name}`, body: `${p.name} (${p.category}) has signed up.\n\nOffers Hýsa: ${agrLabel(p)} excl. VAT${p.offer?.notes ? ` – ${p.offer.notes}` : ""}\nContact: ${p.contactName || ""} ${p.email}\nWebsite: ${p.website || "-"}\nBooking system: ${SYSTEMS[p.integration?.type] || "-"}\n\nApprove or reject in the admin: ${origin}/admin.html` };
+}
+
 /* ---- partner health & change log ---- */
-export const CHANGE_FIELDS = { name: "Business name", category: "Category", website: "Website", phone: "Phone", publicEmail: "Email for guests", address: "Address", hours: "Opening hours", description: "Description", discountText: "Guest offer", discountCode: "Discount code", contactName: "Contact person", email: "Contact email", invoiceEmail: "Invoice email", companyId: "Company no." };
+export const CHANGE_FIELDS = { name: "Business name", category: "Category", website: "Website", phone: "Phone", publicEmail: "Email for guests", address: "Address", hours: "Opening hours", description: "Description", discountText: "Old guest offer text", discountCode: "Old discount code", contactName: "Contact person", email: "Contact email", invoiceEmail: "Invoice email", companyId: "Company no." };
 export function diffChanges(before, after, by) {
   const at = nowISO(), out = [];
   for (const [k, label] of Object.entries(CHANGE_FIELDS)) {
@@ -183,12 +263,17 @@ export function partnerHealth(p, { sales = [], invoices = [] } = {}) {
   if (i.type === "script" && !p.scriptSeenAt && !p.lastConversionAt) add("yellow", "Tracking code not found on the website", "partner");
   const miss = [["website", "website"], ["phone", "phone"], ["address", "address"], ["hours", "opening hours"], ["description", "description"]].filter(([k]) => !String(p[k] || "").trim()).map((x) => x[1]);
   if (miss.length) add("yellow", `Listing is missing: ${miss.join(", ")}`, "partner");
-  const off = String(p.discountText || "").trim();
-  if (!off) add("yellow", "No offer for Hýsa guests", "partner");
-  else if (off.length < 5 || /^[0-9\s%.,+-]+$/.test(off)) add("yellow", `Guest offer is unclear: “${off}”`, "partner");
+  const bn = benefit(p);
+  if (bn.legacy && p.status === "approved") add("yellow", `Choose what Hýsa guests get (old offer text: “${p.discountText || p.discountCode}”)`, "hysa");
+  if (bn.mode !== "none" && !(bn.rate > 0)) add("yellow", `${bn.mode === "discount" ? "Discount" : "Cashback"} chosen, but the % is 0`, "hysa");
+  if (bn.mode !== "none" && (a.type || "percent") === "percent" && bn.rate >= (+a.rate || 0) / 1.25) add("yellow", `The guest ${bn.mode} is as high as the commission – Hýsa earns nothing`, "hysa");
   if (!p.email) add("yellow", "No contact email", "partner");
   const flagged = sales.filter((s) => s.partnerId === p.id && !s.deleted && s.flagged === "not_registered" && Date.parse(s.createdAt || s.date) > since).length;
   if (flagged) add("yellow", `${flagged} voucher purchase${flagged > 1 ? "s" : ""} confirmed by guests but not registered (90 days)`, "partner");
+  const disputed = sales.filter((s) => s.partnerId === p.id && !s.deleted && s.review === "disputed").length;
+  if (disputed) add("yellow", `${disputed} guest receipt${disputed > 1 ? "s" : ""} disputed by the partner – decide in Sales`, "hysa");
+  const cbFail = sales.filter((s) => s.partnerId === p.id && cashbackState(s) === "failed").length;
+  if (cbFail) add("yellow", `${cbFail} cashback${cbFail > 1 ? "s" : ""} to pay manually`, "hysa");
   const overdue = invoices.filter((v) => v.partnerId === p.id && !v.deleted && v.status !== "paid" && v.dueDate && v.dueDate < d);
   if (overdue.length) add("yellow", `${overdue.length} invoice${overdue.length > 1 ? "s" : ""} overdue`, "partner");
   const mine = sales.filter((s) => s.partnerId === p.id && !s.deleted && s.review !== "rejected").map((s) => s.date || "").sort();

@@ -67,10 +67,12 @@ function render(){
       ${p.hours?`<dt>Opening hours</dt><dd>${esc(p.hours)}</dd>`:""}
     </dl>
   </div><div class="side">
+    ${p.benefit==="cashback"&&p.cashback?`<div class="offer"><small>Hýsa guest cashback</small><span><b style="font:inherit;font-weight:700">${esc(p.cashback)}% back</b> on what you spend here. Pay as normal, then upload your receipt.</span></div>`:""}
     ${p.discountText||p.discountCode?`<div class="offer"><small>Hýsa guest offer</small>${p.discountText?`<span>${esc(p.discountText)}</span>`:""}${p.discountCode?`<div class="r"><b>${esc(p.discountCode)}</b><button data-copy="${esc(p.discountCode)}">Copy code</button></div>`:""}</div>`:""}
     ${p.go?`<a class="btn pri lg" href="${esc(p.go)}" target="_blank" rel="noopener">Visit &amp; book online</a>`:""}
     ${p.discountText?`<a class="btn lg${p.go?"":" pri"}" href="/voucher.html?p=${encodeURIComponent(p.slug)}">Get offer for in-person visit</a>`:""}
-    ${!p.go&&!p.discountText&&p.phone?`<a class="btn lg" href="tel:${esc(p.phone.replace(/\s+/g,""))}">Call to book</a>`:""}
+    ${p.benefit==="cashback"&&p.cashback?`<a class="btn lg${p.go?"":" pri"}" href="/receipt.html?p=${encodeURIComponent(p.slug)}">Upload receipt for ${esc(p.cashback)}% back</a>`:""}
+    ${!p.go&&!p.discountText&&p.benefit!=="cashback"&&p.phone?`<a class="btn lg" href="tel:${esc(p.phone.replace(/\s+/g,""))}">Call to book</a>`:""}
   </div></article>`).join("")}</section>`).join("");
 }
 document.addEventListener("click",async e=>{const b=e.target.closest("button");if(!b)return;

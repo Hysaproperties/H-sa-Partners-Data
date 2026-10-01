@@ -24,7 +24,7 @@ ol.howto{margin:0;padding-left:20px;font-size:.9rem;display:flex;flex-direction:
   <div class="steps" style="margin-bottom:22px">
     <div class="step"><b>Sign up</b>Tell us about your business. It takes about five minutes.</div>
     <div class="step"><b>Get approved</b>We confirm the terms and add you to the guest guide.</div>
-    <div class="step"><b>Receive guests</b>Guests book through your Hýsa link. We invoice the commission once a month.</div>
+    <div class="step"><b>Receive guests</b>Guests book through your Hýsa link. We invoice the commission once a week.</div>
   </div>
   <form id="f" class="panel panel-b form" novalidate>
     <div class="sect" style="border:0;padding:0;margin:0"><h3>Your business</h3></div>
@@ -37,8 +37,12 @@ ol.howto{margin:0;padding-left:20px;font-size:.9rem;display:flex;flex-direction:
     <label class="f">Address<input id="address"></label>
     <label class="f">Opening hours<input id="hours" placeholder="Mon–Sat 12–22"></label>
     <label class="f full">Short description for guests (English)<textarea id="description" placeholder="What you offer and why guests will love it."></textarea></label>
-    <label class="f">Offer for Hýsa guests <span class="hint">optional</span><input id="discountText" placeholder="e.g. 10% off, free dessert"></label>
-    <label class="f">Discount code <span class="hint">optional</span><input id="discountCode" class="mono" placeholder="HYSA10"></label>
+
+    <div class="sect"><h3>What you pay Hýsa per sale</h3><span class="sm">Your total commission (kickback) for each sale to a Hýsa guest, excl. VAT. This is all you ever pay.</span></div>
+    <label class="f">Commission type<select id="offerType"><option value="percent">% of what the guest spends (excl. VAT)</option><option value="fixed_order">Fixed amount per booking</option><option value="fixed_person">Fixed amount per person</option></select></label>
+    <label class="f"><span id="offerLbl">Commission %</span><input id="offerRate" type="number" step="0.5" min="0" inputmode="decimal" placeholder="15"></label>
+    <label class="f full">Anything else about the deal? <span class="hint">optional</span><input id="offerNotes" placeholder="e.g. only on rentals of 3+ days"></label>
+    <p class="full sm" style="margin:-6px 0 0">Hýsa may pass part of this on to our guests, as a discount with you or as cashback from Hýsa. If guests get a discount with you, it is deducted from your Hýsa invoice, so in total you never pay more than the commission above.</p>
 
     <div class="sect"><h3>Contact and invoicing</h3></div>
     <label class="f">Contact person<input id="contactName" autocomplete="name"></label>
@@ -82,19 +86,22 @@ const HELP={
    <label class="f">Consumer key<input id="key" class="mono" placeholder="ck_…" autocomplete="off"></label>
    <label class="f">Consumer secret<input id="secret" class="mono" placeholder="cs_…" autocomplete="off"></label></div>`,
  script:`<div class="notice">After sign-up you get a short piece of code for your website and your order confirmation page. Your web developer can add it in about ten minutes. It only reports bookings made by guests who arrived through your Hýsa link.</div>`,
- none:`<div class="notice">Hýsa guests get a personal voucher code on their phone for your guest offer. Before they pay, you enter the code and the amount on your partner page. It takes a few seconds and confirms the guest came from Hýsa. You only give the offer when the code is valid.</div>`};
+ none:`<div class="notice">Guests pay you in person. If Hýsa gives its guests a discount with you, they show a personal Hýsa voucher on their phone: you check it on your partner page before they pay and register the amount. Otherwise you register Hýsa guests' purchases on your partner page, and guests may send us their receipt.</div>`};
 fetch("/api/public").then(r=>r.json()).then(j=>{
   $("#category").innerHTML=(j.categories||["Other"]).map(c=>`<option>${esc(c)}</option>`).join("");
-  $("#terms").innerHTML=`Commission: <b>${+j.defaultRate||10}% of what Hýsa guests spend</b> (excl. VAT), unless we agree otherwise when we approve you. We invoice once a month with 8 days payment terms. Purchases count when the guest came through your Hýsa link or used a Hýsa code, and in-person purchases made with a Hýsa guest voucher or that you register. You can end the partnership at any time.`;
+  $("#offerRate").placeholder=+j.defaultRate||10;
+  $("#terms").innerHTML=`Commission: <b>what you offer above</b> (excl. VAT) for each sale to a Hýsa guest, unless we agree otherwise when we approve you. Any discount Hýsa guests get with you is deducted from it. We invoice ${j.invoiceFrequency==="monthly"?"once a month":"once a week"} with ${+j.paymentDays||8} days payment terms. Guests may also send us receipts of in-person purchases; you see them on your partner page and can dispute a wrong one within ${+j.receiptReviewDays||3} days. Purchases count when the guest came through your Hýsa link or used a Hýsa code, and in-person purchases made with a Hýsa guest voucher or that you register. You can end the partnership at any time.`;
 });
 $("#sys").innerHTML=SYS.map(([k,t,d],i)=>`<label><input type="radio" name="system" value="${k}" ${i===3?"checked":""}><span><b>${t}</b><small>${d}</small></span></label>`).join("");
 const showHelp=()=>{$("#sysHelp").innerHTML=HELP[document.querySelector('input[name=system]:checked').value]};showHelp();
 $("#sys").addEventListener("change",showHelp);
+$("#offerType").addEventListener("change",()=>{$("#offerLbl").textContent=$("#offerType").value==="percent"?"Commission %":"Amount (DKK)"});
 function msg(t,k=""){$("#msg").innerHTML=t?`<div class="notice ${k}">${t}</div>`:""}
 $("#f").onsubmit=async e=>{e.preventDefault();const v=id=>($("#"+id)?.value||"").trim();
-  const data={name:v("name"),category:v("category"),companyId:v("companyId"),website:v("website"),phone:v("phone"),publicEmail:v("publicEmail"),address:v("address"),hours:v("hours"),description:v("description"),discountText:v("discountText"),discountCode:v("discountCode"),contactName:v("contactName"),email:v("email"),invoiceEmail:v("invoiceEmail"),
+  const data={name:v("name"),category:v("category"),companyId:v("companyId"),website:v("website"),phone:v("phone"),publicEmail:v("publicEmail"),address:v("address"),hours:v("hours"),description:v("description"),offerType:v("offerType"),offerRate:+v("offerRate")||0,offerNotes:v("offerNotes"),contactName:v("contactName"),email:v("email"),invoiceEmail:v("invoiceEmail"),
     system:document.querySelector('input[name=system]:checked').value,shop:v("shop"),token:v("token"),shopUrl:v("shopUrl"),key:v("key"),secret:v("secret"),acceptTerms:$("#acceptTerms").checked};
   if(!data.name||!data.email){msg("Please fill in the business name and your email.","bad");return}
+  if(!(data.offerRate>0)){msg("Please fill in what you offer Hýsa per guest.","bad");return}
   if(!data.acceptTerms){msg("Please accept the partner terms.","bad");return}
   const b=e.target.querySelector("button[type=submit]");b.disabled=true;b.textContent="Sending…";
   try{const r=await fetch("/api/signup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw new Error(j.error||"Could not send");
