@@ -38,10 +38,17 @@ jobs:
       - name: Deploy
         run: npx wrangler deploy
 
-      - name: Set passwords
+      - name: Set passwords and mail settings
         env:
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           JOB_KEY: ${{ secrets.JOB_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
         run: |
           echo "$ADMIN_PASSWORD" | npx wrangler secret put ADMIN_PASSWORD
           echo "$JOB_KEY" | npx wrangler secret put JOB_KEY
+          for k in SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS; do
+            if [ -n "${!k}" ]; then echo "${!k}" | npx wrangler secret put $k; fi
+          done
